@@ -1,0 +1,122 @@
+services:
+  # ──────────────────────────────────────────────
+  # Auth Service (Mini-CA) — JWT issuance + revocation
+  # ──────────────────────────────────────────────
+  auth-service:
+    build:
+      context: .
+      dockerfile: auth-service/Dockerfile
+    container_name: cybermesh-auth
+    ports:
+      - "8081:8081"
+    networks:
+      - cybermesh-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # ──────────────────────────────────────────────
+  # Mock Microservices (internal only)
+  # ──────────────────────────────────────────────
+  user-service:
+    build:
+      context: .
+      dockerfile: services/user-service/Dockerfile
+    container_name: cybermesh-user-svc
+    networks:
+      - cybermesh-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  billing-service:
+    build:
+      context: .
+      dockerfile: services/billing-service/Dockerfile
+    container_name: cybermesh-billing-svc
+    networks:
+      - cybermesh-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  admin-service:
+    build:
+      context: .
+      dockerfile: services/admin-service/Dockerfile
+    container_name: cybermesh-admin-svc
+    networks:
+      - cybermesh-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # ──────────────────────────────────────────────
+  # CyberMesh Proxy — the enforcement engine
+  # ──────────────────────────────────────────────
+  proxy:
+    build:
+      context: .
+      dockerfile: proxy/Dockerfile
+    container_name: cybermesh-proxy
+    ports:
+      - "8080:8080"
+    environment:
+      - AUTH_SERVICE_URL=http://auth-service:8081
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      user-service:
+        condition: service_healthy
+      billing-service:
+        condition: service_healthy
+      admin-service:
+        condition: service_healthy
+    networks:
+      - cybermesh-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  # ──────────────────────────────────────────────
+  # React Dashboard
+  # ──────────────────────────────────────────────
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: cybermesh-dashboard
+    ports:
+      - "3000:3000"
+    depends_on:
+      proxy:
+        condition: service_healthy
+    networks:
+      - cybermesh-net
+    restart: unless-stopped
+
+networks:
+  cybermesh-net:
+    driver: bridge
+    name: cybermesh-network

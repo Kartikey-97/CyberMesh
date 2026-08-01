@@ -1,0 +1,235 @@
+[
+  {
+    "event_type": "mode_changed",
+    "mode": "learning",
+    "data": {"previous_mode": "enforce", "message": "Switched to learning mode"},
+    "delay_ms": 0
+  },
+  {
+    "event_type": "request_decision",
+    "caller": "user-service",
+    "target": "billing-service",
+    "path": "/invoices",
+    "method": "GET",
+    "decision": "ALLOW",
+    "trust_score": 95.0,
+    "identity_score": 100,
+    "behavior_score": 100,
+    "context_score": 100,
+    "band": "high-trust",
+    "latency_ms": 3.2,
+    "reasons": [
+      {"check": "identity", "result": "PASS", "detail": "Valid JWT, fresh token", "score_impact": 0},
+      {"check": "policy", "result": "PASS", "detail": "Learning mode — all traffic observed", "score_impact": 0},
+      {"check": "rate_limit", "result": "PASS", "detail": "2 req/s (limit: 10)", "score_impact": 0}
+    ],
+    "mode": "learning",
+    "delay_ms": 500
+  },
+  {
+    "event_type": "request_decision",
+    "caller": "billing-service",
+    "target": "user-service",
+    "path": "/users",
+    "method": "GET",
+    "decision": "ALLOW",
+    "trust_score": 95.0,
+    "identity_score": 100,
+    "behavior_score": 100,
+    "context_score": 100,
+    "band": "high-trust",
+    "latency_ms": 2.8,
+    "reasons": [
+      {"check": "identity", "result": "PASS", "detail": "Valid JWT, fresh token", "score_impact": 0},
+      {"check": "policy", "result": "PASS", "detail": "Learning mode — all traffic observed", "score_impact": 0}
+    ],
+    "mode": "learning",
+    "delay_ms": 1000
+  },
+  {
+    "event_type": "request_decision",
+    "caller": "admin-service",
+    "target": "user-service",
+    "path": "/users/1",
+    "method": "GET",
+    "decision": "ALLOW",
+    "trust_score": 95.0,
+    "identity_score": 100,
+    "behavior_score": 100,
+    "context_score": 100,
+    "band": "high-trust",
+    "latency_ms": 3.5,
+    "reasons": [
+      {"check": "identity", "result": "PASS", "detail": "Valid JWT, fresh token", "score_impact": 0}
+    ],
+    "mode": "learning",
+    "delay_ms": 1000
+  },
+  {
+    "event_type": "request_decision",
+    "caller": "admin-service",
+    "target": "billing-service",
+    "path": "/invoices",
+    "method": "GET",
+    "decision": "ALLOW",
+    "trust_score": 95.0,
+    "identity_score": 100,
+    "behavior_score": 100,
+    "context_score": 100,
+    "band": "high-trust",
+    "latency_ms": 2.9,
+    "reasons": [],
+    "mode": "learning",
+    "delay_ms": 1000
+  },
+  {
+    "event_type": "policy_generated",
+    "data": {
+      "learned_policy": {
+        "user-service → billing-service": {"count": 15, "first_seen": "2026-08-01T07:00:00Z", "last_seen": "2026-08-01T07:00:30Z"},
+        "billing-service → user-service": {"count": 15, "first_seen": "2026-08-01T07:00:00Z", "last_seen": "2026-08-01T07:00:30Z"},
+        "admin-service → user-service": {"count": 10, "first_seen": "2026-08-01T07:00:00Z", "last_seen": "2026-08-01T07:00:30Z"},
+        "admin-service → billing-service": {"count": 10, "first_seen": "2026-08-01T07:00:00Z", "last_seen": "2026-08-01T07:00:30Z"}
+      },
+      "message": "Policy auto-generated from 30s observation window"
+    },
+    "mode": "enforce",
+    "delay_ms": 2000
+  },
+  {
+    "event_type": "mode_changed",
+    "mode": "enforce",
+    "data": {"previous_mode": "learning", "message": "Switched to enforce mode — policy active"},
+    "delay_ms": 500
+  },
+  {
+    "event_type": "request_decision",
+    "caller": "billing-service",
+    "target": "admin-service",
+    "path": "/admin/config",
+    "method": "GET",
+    "decision": "BLOCK",
+    "trust_score": 15.0,
+    "identity_score": 100,
+    "behavior_score": 0,
+    "context_score": 100,
+    "band": "low-trust",
+    "latency_ms": 1.8,
+    "reasons": [
+      {"check": "identity", "result": "PASS", "detail": "Valid JWT for billing-service", "score_impact": 0},
+      {"check": "policy", "result": "FAIL", "detail": "billing-service → admin-service NOT in learned policy (lateral movement detected)", "score_impact": -100},
+      {"check": "rate_limit", "result": "PASS", "detail": "1 req/s (limit: 10)", "score_impact": 0}
+    ],
+    "mode": "enforce",
+    "delay_ms": 2000
+  },
+  {
+    "event_type": "request_decision",
+    "caller": "billing-service",
+    "target": "admin-service",
+    "path": "/admin/shutdown",
+    "method": "POST",
+    "decision": "BLOCK",
+    "trust_score": 15.0,
+    "identity_score": 100,
+    "behavior_score": 0,
+    "context_score": 100,
+    "band": "low-trust",
+    "latency_ms": 1.5,
+    "reasons": [
+      {"check": "identity", "result": "PASS", "detail": "Valid JWT for billing-service", "score_impact": 0},
+      {"check": "policy", "result": "FAIL", "detail": "billing-service → admin-service NOT in learned policy", "score_impact": -100}
+    ],
+    "mode": "enforce",
+    "delay_ms": 1500
+  },
+  {
+    "event_type": "request_decision",
+    "caller": "billing-service",
+    "target": "user-service",
+    "path": "/users",
+    "method": "GET",
+    "decision": "BLOCK",
+    "trust_score": 28.0,
+    "identity_score": 100,
+    "behavior_score": 100,
+    "context_score": 0,
+    "band": "low-trust",
+    "latency_ms": 1.2,
+    "reasons": [
+      {"check": "identity", "result": "PASS", "detail": "Valid JWT", "score_impact": 0},
+      {"check": "policy", "result": "PASS", "detail": "billing-service → user-service in learned policy", "score_impact": 0},
+      {"check": "rate_limit", "result": "FAIL", "detail": "18 req/s exceeds limit of 10 req/s", "score_impact": -100}
+    ],
+    "mode": "enforce",
+    "delay_ms": 3000
+  },
+  {
+    "event_type": "request_decision",
+    "caller": "billing-service",
+    "target": "user-service",
+    "path": "/users",
+    "method": "POST",
+    "decision": "BLOCK",
+    "trust_score": 10.0,
+    "identity_score": 100,
+    "behavior_score": 100,
+    "context_score": 0,
+    "band": "low-trust",
+    "latency_ms": 1.1,
+    "reasons": [
+      {"check": "identity", "result": "PASS", "detail": "Valid JWT", "score_impact": 0},
+      {"check": "policy", "result": "PASS", "detail": "In learned policy", "score_impact": 0},
+      {"check": "payload", "result": "FAIL", "detail": "SQL injection pattern detected: DROP TABLE, UNION SELECT", "score_impact": -100},
+      {"check": "rate_limit", "result": "FAIL", "detail": "Rate limit exceeded", "score_impact": -100}
+    ],
+    "mode": "enforce",
+    "delay_ms": 2000
+  },
+  {
+    "event_type": "request_decision",
+    "caller": "hacker-service",
+    "target": "admin-service",
+    "path": "/admin/config",
+    "method": "GET",
+    "decision": "BLOCK",
+    "trust_score": 0.0,
+    "identity_score": 0,
+    "behavior_score": 0,
+    "context_score": 0,
+    "band": "low-trust",
+    "latency_ms": 0.8,
+    "reasons": [
+      {"check": "identity", "result": "FAIL", "detail": "Invalid JWT signature — token is forged", "score_impact": -100},
+      {"check": "policy", "result": "FAIL", "detail": "hacker-service not a known service", "score_impact": -100}
+    ],
+    "mode": "enforce",
+    "delay_ms": 2000
+  },
+  {
+    "event_type": "service_revoked",
+    "caller": "billing-service",
+    "data": {"service": "billing-service", "message": "Identity revoked via dashboard kill-switch"},
+    "mode": "enforce",
+    "delay_ms": 3000
+  },
+  {
+    "event_type": "request_decision",
+    "caller": "billing-service",
+    "target": "user-service",
+    "path": "/users",
+    "method": "GET",
+    "decision": "BLOCK",
+    "trust_score": 0.0,
+    "identity_score": 0,
+    "behavior_score": 0,
+    "context_score": 0,
+    "band": "low-trust",
+    "latency_ms": 0.5,
+    "reasons": [
+      {"check": "revocation", "result": "FAIL", "detail": "billing-service identity has been REVOKED — all requests denied", "score_impact": -100}
+    ],
+    "mode": "enforce",
+    "delay_ms": 1500
+  }
+]
