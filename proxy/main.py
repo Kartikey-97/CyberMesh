@@ -37,7 +37,9 @@ from proxy.registry import register as registry_register, resolve as registry_re
 from proxy.policy_engine import check as policy_check, update_learned_policy, learned_policy
 from proxy.learning_mode import record as record_observation, generate_policy, get_observations, get_observation_count, start_learning
 from proxy.trust_score import compute as compute_trust
+from proxy.trust_decay import set_demo_mode as decay_set_demo_mode, decay_stats as get_decay_stats
 from proxy.context_checks import evaluate as check_context
+from proxy.baseline_stats import get_all_baselines
 from proxy.risk_explanation import build as build_explanation
 from proxy.event_stream import broadcaster
 from proxy.revocation import revoke, is_revoked, get_revoked
@@ -144,6 +146,8 @@ async def get_metrics():
         "mode": proxy_mode,
         "registered_services": registry_count(),
         "jti_replay_protection": jti_get_stats(),
+        "trust_decay": get_decay_stats(),
+        "payload_baselines": get_all_baselines(),
     }
 
 
@@ -302,6 +306,36 @@ async def get_revoked_services():
     return {"revoked_services": get_revoked()}
 
 
+# ─── Decay Configuration ───────────────────────────────────────────────
+
+class DecayConfigRequest(BaseModel):
+    demo_mode: bool
+
+@app.post("/decay-config")
+async def configure_decay(body: DecayConfigRequest):
+    """
+    Toggle trust decay between production mode (10min half-life) and
+    demo mode (2min half-life).
+
+    Demo mode makes trust decay visibly observable in a live presentation
+    without waiting 10 minutes for idle routes to drift.
+    """
+    decay_set_demo_mode(body.demo_mode)
+    stats_snapshot = get_decay_stats()
+    logger.info("Trust decay mode changed: demo_mode=%s", body.demo_mode)
+    return {
+        "status": "updated",
+        "decay_config": stats_snapshot,
+        "message": f"Half-life set to {stats_snapshot['half_life_seconds']}s ({stats_snapshot['mode_label']})",
+    }
+
+
+@app.get("/decay-config")
+async def get_decay_config():
+    """Return current trust decay configuration."""
+    return get_decay_stats()
+
+
 # ─── SSE Event Stream ────────────────────────────────────────────────────────
 
 @app.get("/events")
@@ -379,25 +413,36 @@ async def catch_all_proxy(
     if request.method in ("POST", "PUT", "PATCH"):
         body = await request.body()
 
+    # Extract query string for injection scanning
+    query_string = str(request.url.query) if request.url.query else ""
+
     context_score, ctx_reasons = check_context(
         caller=caller_service,
         target=target_service,
         payload=body.decode("utf-8", errors="ignore"),
         content_length=len(body),
         request_time=time.time(),
+        method=request.method,
+        query_string=query_string,
     )
     reasons.extend(ctx_reasons)
 
-    # ─── Step 5: Trust Score ──────────────────────────────────────────────
-    # last_seen is passed for Phase 4 trust decay — compute_trust signature
-    # already accepts it (stub until Phase 4 adds decay logic)
-    trust_score, decision, band = compute_trust(identity_score, behavior_score, context_score, last_seen)
+    # ─── Step 5: Trust Score + Decay ─────────────────────────────────────────
+    # Decay is applied to behavior_score inside compute_trust based on last_seen.
+    # decay_reasons are emitted into the event stream so the dashboard can
+    # show the "trust drifting" visualization.
+    trust_score, decision, band, decayed_behavior, decay_reasons = compute_trust(
+        identity_score, behavior_score, context_score, last_seen
+    )
+    reasons.extend(decay_reasons)
 
     # ─── Step 6: Risk Explanation ─────────────────────────────────────────
     explanation = build_explanation(
         identity_reasons=[r for r in reasons if r.check in ("identity", "revocation")],
         policy_reasons=[r for r in reasons if r.check == "policy"],
-        context_reasons=[r for r in reasons if r.check in ("rate_limit", "time_window", "payload")],
+        context_reasons=[r for r in reasons if r.check in (
+            "rate_limit", "time_window", "payload", "payload_baseline", "behavior_decay"
+        )],
         trust_score=trust_score,
         decision=decision,
     )
@@ -416,13 +461,18 @@ async def catch_all_proxy(
         decision=decision,
         trust_score=round(trust_score, 1),
         identity_score=round(identity_score, 1),
-        behavior_score=round(behavior_score, 1),
+        behavior_score=round(decayed_behavior, 1),   # decayed value for dashboard
         context_score=round(context_score, 1),
         band=band,
         latency_ms=round(latency_ms, 2),
         reasons=reasons,
         mode=proxy_mode,
         jti_replayed=jti_replayed,
+        data={
+            "behavior_score_raw": round(behavior_score, 1),
+            "behavior_score_decayed": round(decayed_behavior, 1),
+            "decay_applied": round(behavior_score - decayed_behavior, 1),
+        } if behavior_score != decayed_behavior else None,
     )
     broadcaster.broadcast(event)
 
