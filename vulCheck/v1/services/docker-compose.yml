@@ -1,0 +1,40 @@
+version: "3.8"
+
+services:
+  user-service:
+    build: ./services/user-service
+    ports:
+      - "8001:8001"
+    environment:
+      - PROXY_URL=http://proxy:8080
+      - SERVICE_SECRET=user-service-secret
+      - BILLING_SERVICE_URL=http://billing-service:8002
+    networks:
+      - cybermesh-net
+
+  billing-service:
+    build: ./services/billing-service
+    ports:
+      - "8002:8002"
+    environment:
+      - PROXY_URL=http://proxy:8080
+      - SERVICE_SECRET=billing-service-secret
+      - USER_SERVICE_URL=http://user-service:8001
+      - ORDER_SERVICE_URL=http://order-service:8003
+    networks:
+      - cybermesh-net
+
+  order-service:
+    build: ./services/order-service
+    ports:
+      - "8003:8003"
+    environment:
+      - PROXY_URL=http://proxy:8080
+      - SERVICE_SECRET=order-service-secret
+      - USER_SERVICE_URL=http://user-service:8001
+    networks:
+      - cybermesh-net
+
+networks:
+  cybermesh-net:
+    driver: bridge
