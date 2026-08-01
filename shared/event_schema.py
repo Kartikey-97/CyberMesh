@@ -23,6 +23,11 @@ DECISION_ALLOW = "ALLOW"
 DECISION_STEP_UP = "STEP_UP"
 DECISION_BLOCK = "BLOCK"
 
+# ReasonDetail result values
+RESULT_PASS = "PASS"
+RESULT_FAIL = "FAIL"
+RESULT_WARN = "WARN"   # Tier 2: novel endpoint on known pair
+
 # Trust Bands
 BAND_HIGH = "high-trust"
 BAND_MEDIUM = "medium-trust"
@@ -59,6 +64,8 @@ class CyberMeshEvent:
     # Metadata
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    # Replay detection flag — set to True when a JTI replay is caught
+    jti_replayed: bool = False
     # Extra data for non-request events
     data: Optional[dict] = None
 

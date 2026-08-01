@@ -312,8 +312,55 @@ async def phase3_attacks(client: httpx.AsyncClient, proxy_url: str):
 
     await asyncio.sleep(1)
 
-    # ─── Attack 4: Expired / Invalid Token ───────────────────────────────────
-    log(f"\n{Colors.BOLD}  🎯 Attack 4: INVALID TOKEN{Colors.RESET}")
+    # ─── Attack 4: JTI Replay Attack ─────────────────────────────────────────
+    log(f"\n{Colors.BOLD}  🎯 Attack 4: JTI REPLAY ATTACK{Colors.RESET}")
+    log("  Step 1: Getting a fresh token and making a legitimate request...", Colors.CYAN)
+    await asyncio.sleep(0.5)
+
+    # Get a fresh token specifically for this demo
+    replay_token = await get_token(client, "billing-service")
+    if replay_token:
+        # First use — should succeed
+        status1, lat1, body1 = await proxy_request(
+            client, proxy_url, "billing-service", "user-service", "/users",
+            token=replay_token
+        )
+        log_result("billing-service", "user-service", "/users", status1, lat1, body1)
+        log(f"  {Colors.GREEN}✓ First use succeeded — token consumed{Colors.RESET}")
+
+        await asyncio.sleep(1)
+
+        # Second use — SAME token, should be BLOCKED as replay
+        log(f"\n  Step 2: Attacker intercepts the token and replays the EXACT same request...", Colors.YELLOW)
+        await asyncio.sleep(0.5)
+
+        status2, lat2, body2 = await proxy_request(
+            client, proxy_url, "billing-service", "user-service", "/users",
+            token=replay_token
+        )
+        log_result("billing-service", "user-service", "/users", status2, lat2, body2)
+
+        if status2 == 403:
+            log(f"  {Colors.GREEN}{Colors.BOLD}✓ REPLAY BLOCKED — Same token rejected on second use!{Colors.RESET}")
+            log(f"  {Colors.GREEN}  The JWT was cryptographically valid but the JTI was already consumed.{Colors.RESET}")
+        else:
+            log(f"  {Colors.YELLOW}⚠ Expected 403 but got {status2}{Colors.RESET}")
+
+        # Third use — triple replay, should also be blocked
+        await asyncio.sleep(0.5)
+        log(f"\n  Step 3: Attacker tries a THIRD time with the same token...", Colors.YELLOW)
+        status3, lat3, body3 = await proxy_request(
+            client, proxy_url, "billing-service", "user-service", "/users",
+            token=replay_token
+        )
+        log_result("billing-service", "user-service", "/users", status3, lat3, body3)
+        if status3 == 403:
+            log(f"  {Colors.GREEN}✓ Third attempt also blocked — replay protection is consistent{Colors.RESET}")
+
+    await asyncio.sleep(1)
+
+    # ─── Attack 5: Expired / Invalid Token ───────────────────────────────────
+    log(f"\n{Colors.BOLD}  🎯 Attack 5: INVALID TOKEN{Colors.RESET}")
     log("  Using a forged/invalid JWT...", Colors.YELLOW)
     await asyncio.sleep(0.5)
 
@@ -324,8 +371,8 @@ async def phase3_attacks(client: httpx.AsyncClient, proxy_url: str):
     )
     log_result("hacker-service", "admin-service", "/admin/config", status, lat, body)
 
-    # ─── Attack 5: No Token ──────────────────────────────────────────────────
-    log(f"\n{Colors.BOLD}  🎯 Attack 5: NO TOKEN{Colors.RESET}")
+    # ─── Attack 6: No Token ──────────────────────────────────────────────────
+    log(f"\n{Colors.BOLD}  🎯 Attack 6: NO TOKEN{Colors.RESET}")
     log("  Attempting request with no authentication...", Colors.YELLOW)
     await asyncio.sleep(0.5)
 
@@ -445,6 +492,7 @@ async def run_simulation(proxy_url: str, fast: bool = False):
   {Colors.GREEN}✓{Colors.RESET} Lateral movement (billing → admin) was blocked
   {Colors.GREEN}✓{Colors.RESET} Rate limit abuse was detected and blocked
   {Colors.GREEN}✓{Colors.RESET} SQL injection payload was flagged
+  {Colors.GREEN}✓{Colors.RESET} Token replay attack blocked (same JTI rejected on reuse)
   {Colors.GREEN}✓{Colors.RESET} Invalid/expired tokens were rejected
   {Colors.GREEN}✓{Colors.RESET} Service revocation took effect immediately
 """)
