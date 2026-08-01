@@ -40,6 +40,15 @@ from proxy.trust_score import compute as compute_trust
 from proxy.trust_decay import set_demo_mode as decay_set_demo_mode, decay_stats as get_decay_stats
 from proxy.context_checks import evaluate as check_context
 from proxy.baseline_stats import get_all_baselines
+from proxy.endpoint_scan_detector import (
+    record_novel_hit, check_scan, get_all_scan_stats,
+    reset_caller as scan_reset_caller,
+    NOVEL_HIT_SCORE_THRESHOLD,
+)
+from proxy.path_template import templatize
+from proxy.shadow_mode import is_shadow, promote as shadow_promote, demote as shadow_demote, get_shadow_stats
+from proxy.policy_versioning import save_snapshot, list_versions, rollback_policy
+from proxy.policy_persistence import load_state, save_state
 from proxy.risk_explanation import build as build_explanation
 from proxy.event_stream import broadcaster
 from proxy.revocation import revoke, is_revoked, get_revoked
@@ -47,7 +56,8 @@ from proxy.fallback_replay import replay_events
 from shared.event_schema import (
     CyberMeshEvent, ReasonDetail,
     DECISION_ALLOW, DECISION_STEP_UP, DECISION_BLOCK,
-    EVENT_REQUEST_DECISION, EVENT_MODE_CHANGED, EVENT_SERVICE_REVOKED, EVENT_POLICY_GENERATED
+    EVENT_REQUEST_DECISION, EVENT_MODE_CHANGED, EVENT_SERVICE_REVOKED,
+    EVENT_POLICY_GENERATED, EVENT_SERVICE_PROMOTED
 )
 from shared.config import AUTH_SERVICE_URL
 
@@ -76,7 +86,13 @@ stats = {
     "blocked": 0,
     "step_ups": 0,
     "total_latency_ms": 0.0,
+    # Shadow mode counters — requests that would have been blocked/stepped up
+    # but were forwarded anyway because the caller is in shadow mode.
+    "shadow_blocked": 0,
+    "shadow_step_ups": 0,
+    "shadow_allowed": 0,
 }
+
 
 
 # ─── Startup / Shutdown ──────────────────────────────────────────────────────
@@ -85,6 +101,9 @@ stats = {
 async def startup_event():
     global http_client
     http_client = httpx.AsyncClient(timeout=10.0)
+
+    # Load persisted policy & snapshots
+    load_state()
 
     # Fetch the RS256 public key from auth-service
     # Retry a few times in case auth-service isn't ready yet
@@ -148,6 +167,13 @@ async def get_metrics():
         "jti_replay_protection": jti_get_stats(),
         "trust_decay": get_decay_stats(),
         "payload_baselines": get_all_baselines(),
+        "scan_detector": get_all_scan_stats(),
+        "shadow_mode": get_shadow_stats(),
+        "shadow_counters": {
+            "shadow_blocked": stats["shadow_blocked"],
+            "shadow_step_ups": stats["shadow_step_ups"],
+            "shadow_allowed": stats["shadow_allowed"],
+        },
     }
 
 
@@ -203,6 +229,60 @@ async def list_services():
     }
 
 
+@app.post("/services/{service_name}/promote")
+async def promote_service(service_name: str):
+    """
+    Promote a service from shadow → enforced mode.
+
+    After promotion, all BLOCK/STEP_UP decisions are enforced for
+    requests coming from this service. Before promotion, they are
+    computed and broadcast but the traffic is always forwarded.
+    """
+    if not shadow_promote(service_name):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Service '{service_name}' is not registered in CyberMesh"
+        )
+    logger.info("Service PROMOTED to enforced mode: %s", service_name)
+
+    promote_event = CyberMeshEvent(
+        event_type=EVENT_SERVICE_PROMOTED,
+        caller=service_name,
+        mode=proxy_mode,
+        data={"service": service_name, "message": f"{service_name} promoted: shadow → enforced"},
+    )
+    broadcaster.broadcast(promote_event)
+
+    return {
+        "status": "promoted",
+        "service": service_name,
+        "mode": "enforced",
+        "message": f"{service_name} is now under full zero-trust enforcement.",
+    }
+
+
+@app.post("/services/{service_name}/demote")
+async def demote_service(service_name: str):
+    """
+    Demote a service from enforced → shadow mode.
+
+    Used during rollbacks or when a service's learned policy needs
+    to be rebuilt after a major config change. Use with caution.
+    """
+    if not shadow_demote(service_name):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Service '{service_name}' is not registered in CyberMesh"
+        )
+    logger.warning("Service DEMOTED to shadow mode: %s", service_name)
+    return {
+        "status": "demoted",
+        "service": service_name,
+        "mode": "shadow",
+        "message": f"{service_name} is back in shadow mode (observational only).",
+    }
+
+
 # ─── Policy ──────────────────────────────────────────────────────────────────
 
 @app.get("/policy")
@@ -220,6 +300,32 @@ async def get_policy():
         "learned_policy": get_observations(),
         "active_learned_count": len(learned_policy),
         "active_learned": active,
+    }
+
+
+@app.get("/policy/versions")
+async def get_policy_versions():
+    """List all available policy snapshots for rollback."""
+    return {"versions": list_versions()}
+
+
+@app.post("/policy/rollback/{version}")
+async def rollback_to_version(version: int):
+    """
+    Roll back the active policy to a previous version snapshot.
+    Instantly updates the policy engine and saves state.
+    """
+    restored = rollback_policy(version)
+    if restored is None:
+        raise HTTPException(status_code=404, detail=f"Policy version {version} not found")
+    
+    update_learned_policy(restored)
+    save_state()
+    logger.info("Rolled back to policy version %d", version)
+    return {
+        "status": "success",
+        "message": f"Rolled back to version {version}",
+        "rule_count": len(restored)
     }
 
 
@@ -252,7 +358,12 @@ async def set_mode(body: ModeRequest):
         new_policy = generate_policy()
         if len(new_policy) > 0:
             update_learned_policy(new_policy)
-            logger.info("Policy auto-generated with %d rules", len(new_policy))
+            
+            # Phase 8+9: Snapshot and save
+            ver = save_snapshot(new_policy, "Auto-generated after learning phase")
+            save_state()
+            
+            logger.info("Policy auto-generated with %d rules (Saved as v%d)", len(new_policy), ver)
 
             policy_event = CyberMeshEvent(
                 event_type=EVENT_POLICY_GENERATED,
@@ -288,6 +399,7 @@ async def set_mode(body: ModeRequest):
 @app.post("/revoke/{service_name}")
 async def revoke_service(service_name: str):
     revoke(service_name)
+    scan_reset_caller(service_name)  # Clear any scan window for this service
     logger.warning("Service REVOKED: %s", service_name)
 
     revoke_event = CyberMeshEvent(
@@ -299,6 +411,16 @@ async def revoke_service(service_name: str):
     broadcaster.broadcast(revoke_event)
 
     return {"status": "revoked", "service": service_name}
+
+
+@app.get("/scan-stats")
+async def get_scan_stats():
+    """Return real-time endpoint scan/recon detection state per caller."""
+    return {
+        "window_seconds": 5.0,
+        "threshold": 4,
+        "callers": get_all_scan_stats(),
+    }
 
 
 @app.get("/revoked")
@@ -408,6 +530,33 @@ async def catch_all_proxy(
     if proxy_mode == "learning" and caller_service != "unknown":
         record_observation(caller_service, target_service, request.method, f"/{path}")
 
+    # ─── Step 3c: Endpoint Scan / Recon Detection ────────────────────────────
+    # Only runs in enforce mode. Novel hits (Tier 2/3) are recorded into
+    # a sliding window. If >=4 distinct novel endpoints are hit within 5s,
+    # it's flagged as reconnaissance and scan_score overrides behavior_score.
+    recon_alert = False
+    if proxy_mode == "enforce" and behavior_score <= NOVEL_HIT_SCORE_THRESHOLD:
+        record_novel_hit(
+            caller_service,
+            target_service,
+            request.method,
+            templatize(f"/{path}"),
+        )
+        scan_score, recon_alert, scan_detail = check_scan(caller_service)
+
+        if recon_alert or scan_score < 100.0:
+            # Override behavior_score with scan_score — recon overrides policy tier
+            # The lower of the two wins (recon finding is more severe)
+            behavior_score = min(behavior_score, scan_score)
+            reasons.append(ReasonDetail(
+                "endpoint_scan",
+                "FAIL" if recon_alert else "WARN",
+                scan_detail,
+                int(scan_score),
+            ))
+            if recon_alert:
+                logger.warning("RECON DETECTED: %s — %s", caller_service, scan_detail)
+
     # ─── Step 4: Context Checks ───────────────────────────────────────────
     body = b""
     if request.method in ("POST", "PUT", "PATCH"):
@@ -436,6 +585,24 @@ async def catch_all_proxy(
     )
     reasons.extend(decay_reasons)
 
+    # ─── Step 5b: Shadow Mode Check ──────────────────────────────────────────
+    caller_in_shadow = is_shadow(caller_service)
+    if caller_in_shadow and decision != DECISION_ALLOW:
+        would_have_been = decision
+        actual_decision = DECISION_ALLOW
+        # Count what the pipeline wanted to do (for shadow analytics)
+        if decision == DECISION_BLOCK:
+            stats["shadow_blocked"] += 1
+        else:
+            stats["shadow_step_ups"] += 1
+        logger.info("SHADOW: %s \u2192 %s %s \u2014 would have been %s", caller_service, target_service, path, decision)
+    else:
+        would_have_been = ""
+        actual_decision = decision
+        if caller_in_shadow:
+            # Pipeline said ALLOW and caller is in shadow — count as shadow_allowed
+            stats["shadow_allowed"] += 1
+
     # ─── Step 6: Risk Explanation ─────────────────────────────────────────
     explanation = build_explanation(
         identity_reasons=[r for r in reasons if r.check in ("identity", "revocation")],
@@ -444,7 +611,7 @@ async def catch_all_proxy(
             "rate_limit", "time_window", "payload", "payload_baseline", "behavior_decay"
         )],
         trust_score=trust_score,
-        decision=decision,
+        decision=actual_decision,
     )
 
     # ─── Measure Proxy Overhead ───────────────────────────────────────────
@@ -458,37 +625,43 @@ async def catch_all_proxy(
         target=target_service,
         path=f"/{path}",
         method=request.method,
-        decision=decision,
+        decision=actual_decision,
         trust_score=round(trust_score, 1),
         identity_score=round(identity_score, 1),
-        behavior_score=round(decayed_behavior, 1),   # decayed value for dashboard
+        behavior_score=round(decayed_behavior, 1),
         context_score=round(context_score, 1),
         band=band,
         latency_ms=round(latency_ms, 2),
         reasons=reasons,
         mode=proxy_mode,
         jti_replayed=jti_replayed,
+        shadow=caller_in_shadow,
+        would_have_been=would_have_been,
         data={
             "behavior_score_raw": round(behavior_score, 1),
             "behavior_score_decayed": round(decayed_behavior, 1),
             "decay_applied": round(behavior_score - decayed_behavior, 1),
-        } if behavior_score != decayed_behavior else None,
+            "recon_alert": recon_alert,
+        } if (behavior_score != decayed_behavior or recon_alert) else {"recon_alert": recon_alert},
     )
     broadcaster.broadcast(event)
 
     response_headers = {"X-CyberMesh-Latency-Ms": f"{latency_ms:.2f}"}
+    if caller_in_shadow:
+        response_headers["X-CyberMesh-Shadow"] = "true"
+        response_headers["X-CyberMesh-Would-Have-Been"] = would_have_been or decision
 
     # ─── Decision: BLOCK ──────────────────────────────────────────────────
-    if decision == DECISION_BLOCK:
+    if actual_decision == DECISION_BLOCK:
         stats["blocked"] += 1
-        logger.warning("BLOCKED: %s → %s/%s (trust=%.1f)", caller_service, target_service, path, trust_score)
+        logger.warning("BLOCKED: %s \u2192 %s/%s (trust=%.1f)", caller_service, target_service, path, trust_score)
         return JSONResponse(
             status_code=403,
             content={
                 "error": "Access denied by CyberMesh",
                 "trust_score": round(trust_score, 1),
                 "band": band,
-                "decision": decision,
+                "decision": actual_decision,
                 "reasons": [{"check": r.check, "result": r.result, "detail": r.detail} for r in reasons],
                 **explanation,
             },
@@ -496,9 +669,9 @@ async def catch_all_proxy(
         )
 
     # ─── Decision: STEP_UP ────────────────────────────────────────────────
-    if decision == DECISION_STEP_UP:
+    if actual_decision == DECISION_STEP_UP:
         stats["step_ups"] += 1
-        logger.info("STEP-UP: %s → %s/%s (trust=%.1f)", caller_service, target_service, path, trust_score)
+        logger.info("STEP-UP: %s \u2192 %s/%s (trust=%.1f)", caller_service, target_service, path, trust_score)
         return JSONResponse(
             status_code=401,
             content={
@@ -506,13 +679,13 @@ async def catch_all_proxy(
                 "message": "Trust score in medium band — re-authentication required",
                 "trust_score": round(trust_score, 1),
                 "band": band,
-                "decision": decision,
+                "decision": actual_decision,
                 "reasons": [{"check": r.check, "result": r.result, "detail": r.detail} for r in reasons],
             },
             headers=response_headers,
         )
 
-    # ─── Decision: ALLOW — Forward to Target ──────────────────────────────
+    # ─── Decision: ALLOW — Forward to Target ─────────────────────────────────
     stats["allowed"] += 1
 
     target_url = registry_resolve(target_service)

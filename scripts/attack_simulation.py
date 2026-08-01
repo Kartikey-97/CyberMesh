@@ -381,7 +381,35 @@ async def phase3_attacks(client: httpx.AsyncClient, proxy_url: str):
     )
     log_result("unknown", "admin-service", "/admin/config", status, lat, body)
 
-    log(f"\n  {Colors.GREEN}✓ All attacks processed. Check the dashboard for the visual threat timeline.{Colors.RESET}")
+    # ─── Attack 7: Endpoint Scan / Reconnaissance ───────────────────────────────────
+    log(f"\n{Colors.BOLD}  🎯 Attack 7: ENDPOINT SCAN (Reconnaissance){Colors.RESET}")
+    log("  billing-service rapidly probes 5 distinct unknown endpoints...", Colors.YELLOW)
+    log(f"  {Colors.DIM}(Each hit is individually a Tier-2 miss. The PATTERN is recon.){Colors.RESET}")
+    await asyncio.sleep(0.5)
+
+    scan_token = await get_token(client, "billing-service")
+    if scan_token:
+        scan_probes = [
+            ("/internal/config",     "1st probe - novel, below threshold"),
+            ("/admin/users",         "2nd probe - novel, below threshold"),
+            ("/debug/env",           "3rd probe - novel, SCAN WARNING"),
+            ("/api/secrets",         "4th probe - RECON THRESHOLD CROSSED"),
+            ("/management/shutdown", "5th probe - still BLOCKED"),
+        ]
+        for i, (probe_path, step_label) in enumerate(scan_probes):
+            log(f"\n  {Colors.DIM}Step {i+1}: {step_label}{Colors.RESET}")
+            status_s, lat_s, body_s = await proxy_request(
+                client, proxy_url, "billing-service", "user-service", probe_path,
+                token=scan_token
+            )
+            log_result("billing-service", "user-service", probe_path, status_s, lat_s, body_s)
+            if i >= 3 and status_s == 403:
+                log(f"  {Colors.GREEN}{Colors.BOLD}  RECON BLOCKED (hit {i+1}) - behavioral pattern detected!{Colors.RESET}")
+            elif i >= 3:
+                log(f"  {Colors.YELLOW}  Expected 403 but got {status_s}{Colors.RESET}")
+            await asyncio.sleep(0.1)
+
+    log(f"\n  {Colors.GREEN}All attacks processed. Check the dashboard for the visual threat timeline.{Colors.RESET}")
 
 
 async def phase4_revocation(client: httpx.AsyncClient, proxy_url: str):
@@ -491,9 +519,10 @@ async def run_simulation(proxy_url: str, fast: bool = False):
   {Colors.GREEN}✓{Colors.RESET} Normal traffic was learned and auto-generated into a policy
   {Colors.GREEN}✓{Colors.RESET} Lateral movement (billing → admin) was blocked
   {Colors.GREEN}✓{Colors.RESET} Rate limit abuse was detected and blocked
-  {Colors.GREEN}✓{Colors.RESET} SQL injection payload was flagged
+  {Colors.GREEN}✓{Colors.RESET} SQL injection payload was flagged (body + query params)
   {Colors.GREEN}✓{Colors.RESET} Token replay attack blocked (same JTI rejected on reuse)
   {Colors.GREEN}✓{Colors.RESET} Invalid/expired tokens were rejected
+  {Colors.GREEN}✓{Colors.RESET} Endpoint scan (5 distinct novel probes) flagged as RECON
   {Colors.GREEN}✓{Colors.RESET} Service revocation took effect immediately
 """)
 

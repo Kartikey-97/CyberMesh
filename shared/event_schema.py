@@ -15,6 +15,7 @@ import json
 EVENT_REQUEST_DECISION = "request_decision"
 EVENT_POLICY_GENERATED = "policy_generated"
 EVENT_SERVICE_REVOKED = "service_revoked"
+EVENT_SERVICE_PROMOTED = "service_promoted"   # shadow → enforced transition
 EVENT_MODE_CHANGED = "mode_changed"
 EVENT_LEARNING_PROGRESS = "learning_progress"
 
@@ -66,6 +67,10 @@ class CyberMeshEvent:
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     # Replay detection flag — set to True when a JTI replay is caught
     jti_replayed: bool = False
+    # Shadow mode: when True, the decision was computed but NOT enforced.
+    # would_have_been carries the computed decision for observability.
+    shadow: bool = False
+    would_have_been: str = ""   # "ALLOW" | "STEP_UP" | "BLOCK" — only set when shadow=True
     # Extra data for non-request events
     data: Optional[dict] = None
 

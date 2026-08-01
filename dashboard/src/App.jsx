@@ -6,6 +6,7 @@ import ThreatTimeline from './components/ThreatTimeline';
 import TrustScorePanel from './components/TrustScorePanel';
 import RiskExplanation from './components/RiskExplanation';
 import ServiceCards from './components/ServiceCards';
+import PolicyVersions from './components/PolicyVersions';
 import { useEventStream } from './hooks/useEventStream';
 import './App.css';
 
@@ -15,50 +16,37 @@ function App() {
   const { events, lastEvent } = useEventStream(`${API_URL}/events`);
   const [metrics, setMetrics] = useState({});
   const [policy, setPolicy] = useState({});
-  const [revoked, setRevoked] = useState([]);
+  const [services, setServices] = useState({});
+  const [policyVersions, setPolicyVersions] = useState([]);
   const [mode, setMode] = useState('enforce');
   const [selectedEvent, setSelectedEvent] = useState(null);
 
-  const fetchMetrics = async () => {
+  const fetchData = async () => {
     try {
-      const res = await fetch(`${API_URL}/metrics`);
-      const data = await res.json();
-      setMetrics(data);
-      if (data.mode) setMode(data.mode);
-    } catch (e) {
-      console.error('Failed to fetch metrics', e);
-    }
-  };
+      const [metRes, polRes, srvRes, verRes] = await Promise.all([
+        fetch(`${API_URL}/metrics`),
+        fetch(`${API_URL}/policy`),
+        fetch(`${API_URL}/services`),
+        fetch(`${API_URL}/policy/versions`)
+      ]);
+      
+      const [met, pol, srv, ver] = await Promise.all([
+        metRes.json(), polRes.json(), srvRes.json(), verRes.json()
+      ]);
 
-  const fetchPolicy = async () => {
-    try {
-      const res = await fetch(`${API_URL}/policy`);
-      const data = await res.json();
-      setPolicy(data);
+      setMetrics(met);
+      setPolicy(pol);
+      setServices(srv);
+      setPolicyVersions(ver.versions || []);
+      if (met.mode) setMode(met.mode);
     } catch (e) {
-      console.error('Failed to fetch policy', e);
-    }
-  };
-
-  const fetchRevoked = async () => {
-    try {
-      const res = await fetch(`${API_URL}/revoked`);
-      const data = await res.json();
-      setRevoked(data.revoked_services || []);
-    } catch (e) {
-      console.error('Failed to fetch revoked', e);
+      console.error('Failed to fetch data', e);
     }
   };
 
   useEffect(() => {
-    fetchMetrics();
-    fetchPolicy();
-    fetchRevoked();
-    const interval = setInterval(() => {
-      fetchMetrics();
-      fetchPolicy();
-      fetchRevoked();
-    }, 2000);
+    fetchData();
+    const interval = setInterval(fetchData, 2000);
     return () => clearInterval(interval);
   }, []);
 
@@ -70,17 +58,36 @@ function App() {
         body: JSON.stringify({ mode: newMode })
       });
       setMode(newMode);
+      fetchData(); // Immediately refresh to grab auto-snapshot if applicable
     } catch (e) {
       console.error('Failed to set mode', e);
     }
   };
 
+  const handleServiceAction = async (serviceName, action) => {
+    try {
+      await fetch(`${API_URL}/services/${serviceName}/${action}`, { method: 'POST' });
+      fetchData();
+    } catch (e) {
+      console.error(`Failed to ${action} ${serviceName}`, e);
+    }
+  };
+  
   const handleRevoke = async (serviceName) => {
     try {
       await fetch(`${API_URL}/revoke/${serviceName}`, { method: 'POST' });
-      fetchRevoked();
+      fetchData();
     } catch (e) {
       console.error('Failed to revoke', e);
+    }
+  };
+
+  const handleRollback = async (version) => {
+    try {
+      await fetch(`${API_URL}/policy/rollback/${version}`, { method: 'POST' });
+      fetchData();
+    } catch (e) {
+      console.error(`Failed to rollback to ${version}`, e);
     }
   };
 
@@ -88,13 +95,11 @@ function App() {
     setSelectedEvent(event);
   };
 
-  const allServices = ['user-service', 'billing-service', 'admin-service'];
-
   return (
     <div className="dashboard-layout">
       <Header mode={mode} metrics={metrics} />
       
-      <div className="controls panel">
+      <div className="controls panel glass">
         <button className={`btn-mode ${mode === 'learning' ? 'active' : ''}`} onClick={() => handleModeChange('learning')}>Learning Mode</button>
         <button className={`btn-mode ${mode === 'enforce' ? 'active' : ''}`} onClick={() => handleModeChange('enforce')}>Enforce Mode</button>
         <button className={`btn-mode ${mode === 'demo-replay' ? 'active' : ''}`} onClick={() => handleModeChange('demo-replay')}>Demo Replay</button>
@@ -103,11 +108,12 @@ function App() {
       <div className="dashboard-content">
         <div className="left-column">
           <LiveFeed events={events} onSelectEvent={handleSelectEvent} selectedEventId={selectedEvent?.event_id} />
-          <ServiceCards services={allServices} revoked={revoked} onRevoke={handleRevoke} />
+          <ServiceCards services={services} onAction={handleServiceAction} onRevoke={handleRevoke} />
         </div>
 
         <div className="right-column">
           <PolicyGraph policy={policy} lastEvent={lastEvent} />
+          <PolicyVersions versions={policyVersions} onRollback={handleRollback} currentCount={policy.active_learned_count || 0} />
           
           {selectedEvent ? (
             <div className="analysis-panels">
@@ -124,3 +130,4 @@ function App() {
 }
 
 export default App;
+
