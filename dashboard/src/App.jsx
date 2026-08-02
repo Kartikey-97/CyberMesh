@@ -52,6 +52,7 @@ function App() {
     setTheme(prev => prev === 'dark' ? 'light' : 'dark');
   };
 
+
   // Use the most recent event if none is selected for the investigation panel
   const displayEvent = selectedEvent || (events.length > 0 ? events[0] : null);
 
@@ -76,15 +77,15 @@ function App() {
             <div style={{ overflowY: 'auto', flex: 1, paddingRight: '8px' }}>
               {policy.active_learned && Object.keys(policy.active_learned).length > 0 ? (
                 Object.keys(policy.active_learned).map(k => (
-                  <div key={k} style={{ marginBottom: '8px', fontSize: '0.8rem', background: 'rgba(255,255,255,0.02)', padding: '6px', borderRadius: '4px', border: '1px solid var(--border-subtle)' }}>
+                  <div key={k} style={{ marginBottom: '8px', fontSize: '0.8rem', color: 'var(--text-primary)', background: 'var(--bg-hover)', padding: '6px', borderRadius: '4px', border: '1px solid var(--border-subtle)' }}>
                     <span style={{ color: '#10b981', fontWeight: 'bold' }}>ALLOW</span> {k}
                   </div>
                 ))
               ) : (
                 <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Learning...</div>
               )}
-              <div style={{ marginTop: '8px', fontSize: '0.8rem', background: 'rgba(239, 68, 68, 0.05)', padding: '6px', borderRadius: '4px', border: '1px solid rgba(239,68,68,0.2)' }}>
-                <span style={{ color: '#ef4444', fontWeight: 'bold' }}>DENY</span> ALL OTHER TRAFFIC
+              <div style={{ marginTop: '8px', fontSize: '0.8rem', background: 'rgba(239, 68, 68, 0.1)', padding: '6px', borderRadius: '4px', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444' }}>
+                <span style={{ fontWeight: 'bold' }}>DENY</span> ALL OTHER TRAFFIC
               </div>
             </div>
           </div>

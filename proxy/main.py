@@ -149,6 +149,17 @@ async def startup_event():
     # Load persisted policy & snapshots
     load_state()
 
+    # Preload simulated baseline policies if empty
+    if len(learned_policy) == 0:
+        now = time.time()
+        initial_policy = {
+            ("user-service", "billing-service", "POST", "/api/v1/invoice"): {"count": 142, "first_seen": now, "last_seen": now},
+            ("billing-service", "payment-gateway", "POST", "/api/v1/charge"): {"count": 89, "first_seen": now, "last_seen": now},
+            ("billing-service", "database", "POST", "/db/query"): {"count": 312, "first_seen": now, "last_seen": now},
+        }
+        update_learned_policy(initial_policy)
+        logger.info("Preloaded baseline learned policies.")
+
     # Fetch the RS256 public key from auth-service
     # Retry a few times in case auth-service isn't ready yet
     for attempt in range(10):
@@ -681,6 +692,42 @@ async def sse_events(request: Request):
             broadcaster.unsubscribe(q)
 
     return EventSourceResponse(event_generator())
+
+
+# ─── Gemini Explainable AI ───────────────────────────────────────────────────
+
+class ThreatRequest(BaseModel):
+    event: dict
+
+@app.post("/analyze-threat")
+async def analyze_threat(req: ThreatRequest):
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return {"summary": "Gemini API key not configured. Explanation unavailable."}
+    
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-3.5-flash")
+        
+        event = req.event
+        prompt = f"""
+        Analyze this blocked Zero Trust proxy request and provide a 2-sentence technical summary of the threat and recommended action. 
+        Do not use markdown formatting. Keep it extremely concise.
+        
+        Source: {event.get('caller')}
+        Target: {event.get('target')}
+        Path: {event.get('path')}
+        Method: {event.get('method')}
+        Blocked Reasons: {event.get('reasons')}
+        """
+        response = model.generate_content(prompt)
+        return {"summary": response.text.strip()}
+    except ImportError:
+        return {"summary": "google-generativeai package not installed."}
+    except Exception as e:
+        logger.error(f"Gemini error: {e}")
+        return {"summary": f"Error reaching AI explanation service: {str(e)}"}
 
 
 # ─── Core Proxy Route ────────────────────────────────────────────────────────

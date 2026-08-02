@@ -52,9 +52,11 @@ export default function PolicyGraph({ policy, lastEvent, theme }) {
       let serviceNames = new Set(['user-service', 'billing-service', 'admin-service']);
       if (policy && policy.active_learned) {
         Object.keys(policy.active_learned).forEach(k => {
-          const [caller, target] = k.split(' → ');
-          if (caller) serviceNames.add(caller);
-          if (target) serviceNames.add(target);
+          const parts = k.split(' ')[0].split('→');
+          if (parts.length === 2) {
+            serviceNames.add(parts[0]);
+            serviceNames.add(parts[1]);
+          }
         });
       }
 
@@ -72,21 +74,25 @@ export default function PolicyGraph({ policy, lastEvent, theme }) {
       // 1. Draw static background connections (faint)
       const activePolicy = policy?.active_learned || policy?.hardcoded_policy || {};
       Object.keys(activePolicy).forEach(k => {
-        const [callerId, targetId] = k.split(' → ');
-        const caller = nodes.find(n => n.id === callerId);
-        const target = nodes.find(n => n.id === targetId);
-        
-        if (caller && target) {
+        const parts = k.split(' ')[0].split('→');
+        if (parts.length === 2) {
+          const callerId = parts[0];
+          const targetId = parts[1];
+          const caller = nodes.find(n => n.id === callerId);
+          const target = nodes.find(n => n.id === targetId);
+          
+          if (caller && target) {
           ctx.beginPath();
           ctx.strokeStyle = theme === 'light' ? 'rgba(15, 23, 42, 0.1)' : 'rgba(255, 255, 255, 0.05)';
           ctx.lineWidth = 1.5;
-          ctx.moveTo(caller.x, caller.y);
-          ctx.lineTo(target.x, target.y);
-          ctx.stroke();
+            ctx.moveTo(caller.x, caller.y);
+            ctx.lineTo(target.x, target.y);
+            ctx.stroke();
+          }
         }
       });
 
-      // 2. Draw live threat traffic
+      // 2. Draw live traffic
       if (lastEvent) {
         const caller = nodes.find(n => n.id === lastEvent.caller);
         const target = nodes.find(n => n.id === lastEvent.target);
@@ -94,22 +100,22 @@ export default function PolicyGraph({ policy, lastEvent, theme }) {
            const isBlock = lastEvent.decision === 'BLOCK';
            const isRecon = lastEvent.data?.recon_alert;
            
-           if (isBlock || isRecon) {
-             ctx.beginPath();
-             if (isRecon) {
-               ctx.strokeStyle = '#a855f7'; 
-             } else if (isBlock) {
-               ctx.strokeStyle = '#ef4444'; 
-             }
-             
-             ctx.lineWidth = 2.5;
-             ctx.setLineDash([10, 10]);
-             ctx.lineDashOffset = -time / 15; 
-             ctx.moveTo(caller.x, caller.y);
-             ctx.lineTo(target.x, target.y);
-             ctx.stroke();
-             ctx.setLineDash([]); 
+           ctx.beginPath();
+           if (isRecon) {
+             ctx.strokeStyle = '#a855f7'; 
+           } else if (isBlock) {
+             ctx.strokeStyle = '#ef4444'; 
+           } else {
+             ctx.strokeStyle = '#10b981'; // Green for allowed traffic
            }
+           
+           ctx.lineWidth = 2.5;
+           ctx.setLineDash([10, 10]);
+           ctx.lineDashOffset = -time / 15; 
+           ctx.moveTo(caller.x, caller.y);
+           ctx.lineTo(target.x, target.y);
+           ctx.stroke();
+           ctx.setLineDash([]); 
         }
       }
 
@@ -127,18 +133,28 @@ export default function PolicyGraph({ policy, lastEvent, theme }) {
         
         ctx.lineWidth = 2;
         let defaultStroke = theme === 'light' ? '#CBD5E1' : (pulse > 0.8 ? '#334155' : '#1e293b');
-        ctx.strokeStyle = isEventActive ? '#ef4444' : defaultStroke;
+        
+        let eventColor = '#ef4444'; // Red default for block
+        if (isEventActive) {
+           eventColor = (lastEvent && lastEvent.decision !== 'BLOCK') ? '#10b981' : '#ef4444';
+        }
+
+        ctx.strokeStyle = isEventActive ? eventColor : defaultStroke;
         ctx.stroke();
         
         // Inner Circle
         ctx.beginPath();
         ctx.arc(node.x, node.y, 10, 0, 2 * Math.PI);
         let defaultInner = theme === 'light' ? 'rgba(15, 23, 42, 0.1)' : 'rgba(51, 65, 85, 0.5)';
-        ctx.fillStyle = isEventActive ? 'rgba(239, 68, 68, 0.4)' : defaultInner;
+        
+        // Use faint green or faint red
+        const innerActiveColor = (lastEvent && lastEvent.decision !== 'BLOCK') ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)';
+        ctx.fillStyle = isEventActive ? innerActiveColor : defaultInner;
         ctx.fill();
         
         // Node Label
-        ctx.fillStyle = isEventActive ? (theme === 'light' ? '#ef4444' : '#ffffff') : (theme === 'light' ? '#64748b' : '#94a3b8'); 
+        let labelActiveColor = (lastEvent && lastEvent.decision !== 'BLOCK') ? '#10b981' : '#ef4444';
+        ctx.fillStyle = isEventActive ? labelActiveColor : (theme === 'light' ? '#64748b' : '#94a3b8'); 
         ctx.font = '500 12px Inter, sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText(node.id, node.x, node.y + 42);

@@ -80,6 +80,7 @@ services:
     environment:
       - AUTH_SERVICE_URL=http://auth-service:8081
       - PYTHONUNBUFFERED=1
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
     depends_on:
       auth-service:
         condition: service_healthy

@@ -1,7 +1,35 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import './InvestigationDetails.css';
 
 export default function InvestigationDetails({ event, onClear }) {
+  const [aiSummary, setAiSummary] = useState(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+
+  // Clear AI summary when event changes
+  useEffect(() => {
+    setAiSummary(null);
+    setIsAnalyzing(false);
+  }, [event?.event_id]);
+
+  const handleAnalyze = async () => {
+    if (!event) return;
+    setIsAnalyzing(true);
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+      const res = await fetch(`${API_URL}/analyze-threat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event })
+      });
+      const data = await res.json();
+      setAiSummary(data.summary);
+    } catch (err) {
+      setAiSummary("Failed to reach Gemini AI service.");
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
   if (!event) {
     return (
       <div className="panel investigation-details" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -52,49 +80,100 @@ export default function InvestigationDetails({ event, onClear }) {
         )}
       </div>
 
-      <div className="inv-grid">
-        <div className="inv-row">
-          <span className="inv-label">Request ID:</span>
-          <span className="inv-value" style={{ fontFamily: 'monospace' }}>
-            req_{event.event_id ? event.event_id.split('-')[0] : Math.random().toString(36).substr(2, 8)}
-          </span>
+      <div style={{ flex: 1, overflowY: 'auto', paddingRight: '4px' }}>
+        <div className="inv-grid">
+          <div className="inv-row">
+            <span className="inv-label">Request ID:</span>
+            <span className="inv-value" style={{ fontFamily: 'monospace' }}>
+              req_{event.event_id ? event.event_id.split('-')[0] : Math.random().toString(36).substr(2, 8)}
+            </span>
+          </div>
+
+          <div className="inv-row">
+            <span className="inv-label">Source:</span>
+            <span className="inv-value highlight">{event.caller}</span>
+          </div>
+
+          <div className="inv-row">
+            <span className="inv-label">Target:</span>
+            <span className="inv-value highlight">{event.target}</span>
+          </div>
+
+          <div className="inv-row">
+            <span className="inv-label">Identity:</span>
+            <span className={`inv-value ${identityVerified ? 'text-green' : 'text-red'}`}>
+              {identityVerified ? 'Valid DPoP' : 'Invalid / Mismatch'}
+            </span>
+          </div>
+
+          <div className="inv-row">
+            <span className="inv-label">Policy:</span>
+            <span className="inv-value" style={{ fontFamily: 'monospace', color: '#94a3b8' }}>
+              {policyName}
+            </span>
+          </div>
+
+          <div className="inv-row">
+            <span className="inv-label">Reason:</span>
+            <span className="inv-value text-muted">{primaryReason}</span>
+          </div>
+
+          <div className="inv-row action-row">
+            <span className="inv-label">Action:</span>
+            <span className="inv-value" style={{ color: actionColor, fontWeight: 'bold' }}>
+              {isBlocked ? 'Blocked' : 'Allowed'}
+            </span>
+          </div>
         </div>
 
-        <div className="inv-row">
-          <span className="inv-label">Source:</span>
-          <span className="inv-value highlight">{event.caller}</span>
-        </div>
+        {isBlocked && (
+          <div style={{ marginTop: '16px', paddingBottom: '16px' }}>
+            {!aiSummary && !isAnalyzing && (
+              <button 
+                onClick={handleAnalyze}
+                style={{
+                  width: '100%',
+                  padding: '8px',
+                  background: 'rgba(168, 85, 247, 0.1)',
+                  border: '1px solid rgba(168, 85, 247, 0.3)',
+                  color: '#a855f7',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px',
+                  fontWeight: '600',
+                  fontSize: '0.85rem'
+                }}
+              >
+                Run Threat Analyser
+              </button>
+            )}
 
-        <div className="inv-row">
-          <span className="inv-label">Target:</span>
-          <span className="inv-value highlight">{event.target}</span>
-        </div>
+            {isAnalyzing && (
+               <div style={{ textAlign: 'center', padding: '12px', color: '#a855f7', fontSize: '0.85rem' }}>
+                 Analyzing with Gemini...
+               </div>
+            )}
 
-        <div className="inv-row">
-          <span className="inv-label">Identity:</span>
-          <span className={`inv-value ${identityVerified ? 'text-green' : 'text-red'}`}>
-            {identityVerified ? 'Valid DPoP' : 'Invalid / Mismatch'}
-          </span>
-        </div>
-
-        <div className="inv-row">
-          <span className="inv-label">Policy:</span>
-          <span className="inv-value" style={{ fontFamily: 'monospace', color: '#94a3b8' }}>
-            {policyName}
-          </span>
-        </div>
-
-        <div className="inv-row">
-          <span className="inv-label">Reason:</span>
-          <span className="inv-value text-muted">{primaryReason}</span>
-        </div>
-
-        <div className="inv-row action-row">
-          <span className="inv-label">Action:</span>
-          <span className="inv-value" style={{ color: actionColor, fontWeight: 'bold' }}>
-            {isBlocked ? 'Blocked' : 'Allowed'}
-          </span>
-        </div>
+            {aiSummary && (
+              <div style={{
+                marginTop: '8px',
+                padding: '12px',
+                background: 'rgba(168, 85, 247, 0.05)',
+                border: '1px solid rgba(168, 85, 247, 0.2)',
+                borderRadius: '6px',
+                fontSize: '0.85rem',
+                color: 'var(--text-primary)',
+                lineHeight: '1.5'
+              }}>
+                <div style={{ color: '#a855f7', fontWeight: 'bold', marginBottom: '4px', fontSize: '0.75rem', textTransform: 'uppercase' }}>Gemini Analysis</div>
+                {aiSummary}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

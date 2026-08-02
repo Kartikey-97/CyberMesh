@@ -1,4 +1,4 @@
-# 🛡️ CyberMesh — Zero-Trust Access Control for Decentralized APIs
+# CyberMesh — Zero-Trust Access Control for Decentralized APIs
 
 > A lightweight zero-trust service mesh proxy that enforces cryptographic identity on every inter-service request, auto-learns traffic policies, and visualizes everything on a real-time dashboard.
 
@@ -6,7 +6,7 @@
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (with Docker Compose v2)
@@ -54,31 +54,96 @@ The attack simulation runs through 4 phases:
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
-```
-                    ┌─────────────────┐
-                    │  auth-service    │ (mini-CA)
-                    │  JWT issuance    │
-                    │  + revocation    │
-                    └────────┬────────┘
-                             │
-  user-service ──┐           │           ┌──► admin-service
-                 │           │           │
-  billing-service┼──► [ CYBERMESH PROXY ]┼──► (forward if allowed)
-                 │    - verify identity  │
-  admin-service ─┘    - check policy     │
-                      - trust score      │
-                      - risk explanation │
-                      - learning mode    │
-                      - SSE events ──────┼──► [ React Dashboard ]
-                                                  ↕
-                                            Live monitoring
-                                            Kill-switch
-                                            Policy graph
+```mermaid
+flowchart LR
+
+    Dev["Developer<br/>Microservice"]
+
+    SDK["CyberMesh SDK"]
+
+    Proxy["CyberMesh Proxy"]
+
+    Auth["Auth Server"]
+
+    Service["Protected<br/>Service"]
+
+    Dashboard["Control Plane Dashboard"]
+
+    Dev --> SDK
+    SDK --> Proxy
+
+    Proxy --- Auth
+
+    Proxy --> Service
+
+    Proxy -. Telemetry .-> Dashboard
+    Auth -. Security Events .-> Dashboard
 ```
 
-## 🔑 Key Features
+## Request Workflow
+
+```mermaid
+flowchart LR
+ subgraph Identity["Identity Validation Layer"]
+    direction TB
+        mTLS["mTLS Authentication"]
+        JWT["JWT Claims Verification"]
+        DPoP["DPoP Proof Verification"]
+  end
+ subgraph Replay["Replay Protection Layer"]
+    direction TB
+        ReplayCheck["Nonce + Timestamp Validation"]
+        Nonce[("Nonce Cache")]
+  end
+ subgraph Auth["Authorization Layer"]
+    direction TB
+        Policy["Contextual Policy Engine"]
+        Trust["Trust Decision Engine"]
+  end
+ subgraph CyberMesh["CyberMesh Zero-Trust Proxy"]
+    direction LR
+        Identity
+        Replay
+        Auth
+  end
+    ReplayCheck --- Nonce
+    Policy --> Trust
+    Identity --> Replay
+    Replay --> Auth
+    Source(["Source Microservice"]) --> Identity & CyberMesh
+    Trust -- Allow --> Target(["Target Microservice"])
+    Trust -- Deny --> Alert(["Block Request<br>Trigger Alert"])
+    DPoP -. Invalid Identity .-> Alert
+    ReplayCheck -. Replay Attack .-> Alert
+    Policy -. Policy Violation .-> Alert
+    Target -. Async Logs .-> Audit[("Security Audit<br>&amp; Telemetry")]
+    Alert -. Security Event .-> Audit
+
+     mTLS:::layer
+     JWT:::layer
+     DPoP:::layer
+     ReplayCheck:::layer
+     Nonce:::cache
+     Policy:::layer
+     Trust:::decision
+     Source:::source
+     Target:::target
+     Alert:::block
+     Audit:::db
+    classDef source fill:#1E293B,stroke:#475569,color:#FFFFFF
+    classDef layer fill:#3B82F6,stroke:#2563EB,color:#FFFFFF
+    classDef decision fill:#8B5CF6,stroke:#7C3AED,color:#FFFFFF
+    classDef target fill:#10B981,stroke:#059669,color:#FFFFFF
+    classDef block fill:#EF4444,stroke:#DC2626,color:#FFFFFF
+    classDef db fill:#4B5563,stroke:#374151,color:#FFFFFF
+    classDef cache fill:#F59E0B,stroke:#D97706,color:#FFFFFF
+
+    L_Source_CyberMesh_0@{ curve: natural }
+```
+
+## Key Features
 
 ### Cryptographic Identity
 Every microservice gets a signed JWT (HS256, 60s TTL). The proxy verifies the signature on every single request — no persistent trust.
@@ -115,7 +180,7 @@ Revoke a service's identity from the dashboard — its next request fails instan
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 CyberMesh/
@@ -145,7 +210,7 @@ CyberMesh/
 
 ---
 
-## 🎯 Evaluation Metrics
+## Evaluation Metrics
 
 | Metric | Target | How We Meet It |
 |--------|--------|----------------|
@@ -155,7 +220,7 @@ CyberMesh/
 
 ---
 
-## 🛠️ Development
+## Development
 
 ### Run services locally (without Docker)
 ```bash
