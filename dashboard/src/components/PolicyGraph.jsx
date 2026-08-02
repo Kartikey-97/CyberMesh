@@ -1,6 +1,6 @@
 import React, { useRef, useEffect } from 'react';
 
-export default function PolicyGraph({ policy, lastEvent, theme }) {
+export default function PolicyGraph({ policy, events, lastEvent, theme }) {
   const containerRef = useRef(null);
   const canvasRef = useRef(null);
   const startTimeRef = useRef(Date.now()); // Persist start time across re-renders!
@@ -58,6 +58,17 @@ export default function PolicyGraph({ policy, lastEvent, theme }) {
             serviceNames.add(parts[1]);
           }
         });
+      }
+      
+      // Also ensure nodes from recent events are visible
+      if (events && events.length > 0) {
+        events.forEach(evt => {
+          if (evt.caller) serviceNames.add(evt.caller);
+          if (evt.target) serviceNames.add(evt.target);
+        });
+      } else if (lastEvent) {
+        if (lastEvent.caller) serviceNames.add(lastEvent.caller);
+        if (lastEvent.target) serviceNames.add(lastEvent.target);
       }
 
       const services = Array.from(serviceNames);
@@ -168,7 +179,7 @@ export default function PolicyGraph({ policy, lastEvent, theme }) {
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-  }, [policy, lastEvent, theme]);
+  }, [policy, events, lastEvent, theme]);
 
   return (
     <div className="policy-graph panel" ref={containerRef} style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>

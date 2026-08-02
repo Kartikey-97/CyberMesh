@@ -93,7 +93,7 @@ function App() {
 
         {/* Column 2: The Hero (Topology) */}
         <div className="story-col col-hero">
-          <PolicyGraph policy={policy} lastEvent={lastEvent} theme={theme} />
+          <PolicyGraph policy={policy} events={events} lastEvent={lastEvent} theme={theme} />
         </div>
 
         {/* Column 3: Evidence (Alerts & Investigation) */}
