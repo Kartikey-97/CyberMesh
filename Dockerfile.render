@@ -1,0 +1,17 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy all the python modules
+COPY auth-service/ /app/auth-service/
+COPY proxy/ /app/proxy/
+COPY shared/ /app/shared/
+COPY render_start.py /app/
+
+# Expose the default Render port
+EXPOSE 8080
+
+CMD ["python", "render_start.py"]
