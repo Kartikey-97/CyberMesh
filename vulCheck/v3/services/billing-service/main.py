@@ -2,10 +2,17 @@ import httpx, asyncio, os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, status, Body
 
+# ── CyberMesh SDK Integration ───────────────────────────────────────
+import sys
+sys.path.insert(0, "/app")
+from cybermesh_sdk import CyberMeshMiddleware, MeshClient
+
 PROXY_URL = os.environ.get("PROXY_URL", "http://proxy:8080")
 SERVICE_NAME = "billing-service"
 SERVICE_PORT = 8002
 SERVICE_SECRET = os.environ.get("SERVICE_SECRET", "billing-service-secret")
+
+mesh = MeshClient(SERVICE_NAME, proxy_url=PROXY_URL)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -19,19 +26,21 @@ async def lifespan(app: FastAPI):
                 })
                 if r.status_code == 200:
                     print(f"✓ Registered with CyberMesh mesh")
+                    await mesh.acquire_token(SERVICE_SECRET)
                     break
             except Exception:
                 pass
             await asyncio.sleep(2)
     yield
+    await mesh.aclose()
 
-app = FastAPI(title="Billing Service", lifespan=lifespan)
+app = FastAPI(title="Billing Service (CyberMesh Protected)", lifespan=lifespan)
+app.add_middleware(CyberMeshMiddleware)
 
 invoices_db = {
     101: {"id": 101, "user_id": 1, "amount": 150.00, "status": "PAID"},
     102: {"id": 102, "user_id": 2, "amount": 299.99, "status": "UNPAID"}
 }
-
 payments_db = {
     "pmt_1": {"id": "pmt_1", "invoice_id": 101, "method": "credit_card", "status": "SUCCESS"}
 }

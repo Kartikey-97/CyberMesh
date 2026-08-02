@@ -1,106 +1,134 @@
 version: '3.8'
 
+# SDK volume — mounts cybermesh_sdk/ from the repo root into every service
+# so each service can `import cybermesh_sdk` without a pip install.
+x-sdk-volume: &sdk-volume
+  type: bind
+  source: ../../../cybermesh_sdk
+  target: /app/cybermesh_sdk
+
 services:
   user-service:
-    build: ./services/user-service
+    build: ./user-service
     ports:
       - "8001:8001"
     environment:
       - PROXY_URL=http://proxy:8080
       - SERVICE_SECRET=user-service-secret
+    volumes:
+      - *sdk-volume
     networks:
       - cybermesh-net
 
   billing-service:
-    build: ./services/billing-service
+    build: ./billing-service
     ports:
       - "8002:8002"
     environment:
       - PROXY_URL=http://proxy:8080
       - SERVICE_SECRET=billing-service-secret
+    volumes:
+      - *sdk-volume
     networks:
       - cybermesh-net
 
   order-service:
-    build: ./services/order-service
+    build: ./order-service
     ports:
       - "8003:8003"
     environment:
       - PROXY_URL=http://proxy:8080
       - SERVICE_SECRET=order-service-secret
+    volumes:
+      - *sdk-volume
     networks:
       - cybermesh-net
 
   inventory-service:
-    build: ./services/inventory-service
+    build: ./inventory-service
     ports:
       - "8004:8004"
     environment:
       - PROXY_URL=http://proxy:8080
       - SERVICE_SECRET=inventory-service-secret
+    volumes:
+      - *sdk-volume
     networks:
       - cybermesh-net
 
   notification-service:
-    build: ./services/notification-service
+    build: ./notification-service
     ports:
       - "8005:8005"
     environment:
       - PROXY_URL=http://proxy:8080
       - SERVICE_SECRET=notification-service-secret
+    volumes:
+      - *sdk-volume
     networks:
       - cybermesh-net
 
   auth-service:
-    build: ./services/auth-service
+    build: ./auth-service
     ports:
       - "8006:8006"
     environment:
       - PROXY_URL=http://proxy:8080
       - SERVICE_SECRET=auth-service-secret
+    volumes:
+      - *sdk-volume
     networks:
       - cybermesh-net
 
   shipping-service:
-    build: ./services/shipping-service
+    build: ./shipping-service
     ports:
       - "8007:8007"
     environment:
       - PROXY_URL=http://proxy:8080
       - SERVICE_SECRET=shipping-service-secret
+    volumes:
+      - *sdk-volume
     networks:
       - cybermesh-net
 
   analytics-service:
-    build: ./services/analytics-service
+    build: ./analytics-service
     ports:
       - "8008:8008"
     environment:
       - PROXY_URL=http://proxy:8080
       - SERVICE_SECRET=analytics-service-secret
+    volumes:
+      - *sdk-volume
     networks:
       - cybermesh-net
 
   recommendation-service:
-    build: ./services/recommendation-service
+    build: ./recommendation-service
     ports:
       - "8009:8009"
     environment:
       - PROXY_URL=http://proxy:8080
       - SERVICE_SECRET=recommendation-service-secret
+    volumes:
+      - *sdk-volume
     networks:
       - cybermesh-net
 
   search-service:
-    build: ./services/search-service
+    build: ./search-service
     ports:
       - "8010:8010"
     environment:
       - PROXY_URL=http://proxy:8080
       - SERVICE_SECRET=search-service-secret
+    volumes:
+      - *sdk-volume
     networks:
       - cybermesh-net
 
 networks:
   cybermesh-net:
-    driver: bridge
+    external: true
+    name: cybermesh-network

@@ -34,7 +34,13 @@ import os
 
 from proxy.identity import verify_token, set_public_key
 from proxy.jti_store import start_cleanup_task as jti_start_cleanup, get_stats as jti_get_stats
-from proxy.registry import register as registry_register, resolve as registry_resolve, list_all as registry_list_all, count as registry_count
+from proxy.jti_cache import _cache as _jti_cache  # for direct async get_stats in metrics
+from proxy.registry import (
+    register as registry_register, resolve as registry_resolve,
+    list_all as registry_list_all, count as registry_count,
+    get_service as registry_get_service, set_public_key as registry_set_public_key,
+)
+from proxy.proof_of_possession import verify_pop
 from proxy.policy_engine import check as policy_check, update_learned_policy, learned_policy
 from proxy.learning_mode import record as record_observation, generate_policy, get_observations, get_observation_count, start_learning
 from proxy.trust_score import compute as compute_trust
@@ -87,11 +93,24 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 class PayloadSizeLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # Enforce 1MB max payload size to prevent DoS (especially important since we parse payloads for anomaly detection)
         content_length = request.headers.get("content-length")
+        transfer_encoding = request.headers.get("transfer-encoding", "").lower()
+
+        # Block chunked payloads with no Content-Length.
+        # Without a declared size, we cannot bound the body before it is fully
+        # buffered into memory by request.body(), enabling an OOM DoS bypass.
+        if transfer_encoding == "chunked" and not content_length:
+            return JSONResponse(
+                status_code=411,
+                content={"error": "Content-Length required. Chunked transfer without Content-Length is not permitted."}
+            )
+
+        # Reject declared oversized payloads before any body is read
         if content_length and int(content_length) > 1024 * 1024:
             return JSONResponse(status_code=413, content={"error": "Payload too large. Maximum allowed size is 1MB."})
+
         return await call_next(request)
+
 
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(PayloadSizeLimitMiddleware)
@@ -178,6 +197,7 @@ async def get_metrics():
     avg_latency = 0.0
     if stats["total_requests"] > 0:
         avg_latency = round(stats["total_latency_ms"] / stats["total_requests"], 2)
+    jti_stats = await _jti_cache.get_stats()
     return {
         "total_requests": stats["total_requests"],
         "allowed": stats["allowed"],
@@ -186,7 +206,7 @@ async def get_metrics():
         "avg_latency_ms": avg_latency,
         "mode": proxy_mode,
         "registered_services": registry_count(),
-        "jti_replay_protection": jti_get_stats(),
+        "jti_replay_protection": jti_stats,
         "trust_decay": get_decay_stats(),
         "payload_baselines": get_all_baselines(),
         "scan_detector": get_all_scan_stats(),
@@ -246,8 +266,41 @@ async def list_services():
             "mode": svc.mode,
             "registered_at": svc.registered_at,
             "revoked": is_revoked(name),
+            "pop_enabled": svc.public_key_pem is not None,
         }
         for name, svc in services.items()
+    }
+
+
+class PopKeyRequest(BaseModel):
+    public_key_pem: str
+    secret: str
+
+
+@app.post("/services/{service_name}/pop-key")
+async def register_pop_key(service_name: str, req: PopKeyRequest):
+    """
+    Register a Proof-of-Possession public key for a service.
+
+    Called automatically by MeshClient.acquire_token() at service startup.
+    After this, every proxied request from the service must carry a valid
+    X-Mesh-Signature header (ECDSA P-256 over method+path+body+time_bucket).
+
+    The proxy will verify signatures against this key. An attacker who
+    intercepts the service's JWT cannot forge a valid signature without
+    also possessing the private key — which never leaves the service process.
+    """
+    if not registry_set_public_key(service_name, req.public_key_pem.encode("utf-8")):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Service '{service_name}' is not registered. Register first via POST /register."
+        )
+    logger.info("PoP public key registered for: %s", service_name)
+    return {
+        "status": "ok",
+        "service_name": service_name,
+        "pop_enabled": True,
+        "message": f"Proof-of-Possession key registered. Future requests from {service_name} will be signature-verified.",
     }
 
 
@@ -599,14 +652,66 @@ async def catch_all_proxy(
     )
     reasons.extend(ctx_reasons)
 
+    # ─── Step 4b: Proof of Possession Verification ────────────────────────────
+    # If the caller has registered a PoP public key, every request must carry
+    # a valid X-Mesh-Signature. This closes the "intercepted token" gap:
+    # even a stolen JWT is useless without the matching private key.
+    pop_score = 100.0
+    sig_header = request.headers.get("x-mesh-signature")
+    sig_ts_header = request.headers.get("x-mesh-sig-ts")
+    caller_svc = registry_get_service(caller_service)
+
+    if caller_svc and caller_svc.public_key_pem:
+        if sig_header and sig_ts_header:
+            try:
+                sig_ts = int(sig_ts_header)
+                pop_verified, pop_score, pop_detail = verify_pop(
+                    method=request.method,
+                    path=f"/{path}",
+                    body=body,
+                    signature_b64=sig_header,
+                    sig_timestamp=sig_ts,
+                    public_key_pem=caller_svc.public_key_pem,
+                )
+                pop_status = "PASS" if pop_verified else "FAIL"
+                reasons.append(ReasonDetail("pop", pop_status, pop_detail, int(pop_score)))
+            except Exception as e:
+                pop_score = 0.0
+                reasons.append(ReasonDetail(
+                    "pop", "FAIL",
+                    f"PoP verification error: {e}", 0
+                ))
+        else:
+            # Service has a PoP key registered but sent no signature — suspicious
+            pop_score = 20.0
+            reasons.append(ReasonDetail(
+                "pop", "WARN",
+                "Service has PoP key registered but X-Mesh-Signature is absent — "
+                "possible SDK bypass or misconfigured client",
+                20
+            ))
+    else:
+        # No PoP key registered yet — neutral, don't penalise
+        reasons.append(ReasonDetail(
+            "pop", "PASS",
+            "PoP not configured for this service (register a public key to enable)",
+            100
+        ))
+
     # ─── Step 5: Trust Score + Decay ─────────────────────────────────────────
     # Decay is applied to behavior_score inside compute_trust based on last_seen.
     # decay_reasons are emitted into the event stream so the dashboard can
     # show the "trust drifting" visualization.
+    #
+    # Fold pop_score into the effective context score:
+    # A PoP failure drives the combined score toward 0 (→ BLOCK).
+    # A PoP-unconfigured service contributes 100 (neutral).
+    effective_context_score = min(context_score, pop_score)
     trust_score, decision, band, decayed_behavior, decay_reasons = compute_trust(
-        identity_score, behavior_score, context_score, last_seen
+        identity_score, behavior_score, effective_context_score, last_seen
     )
     reasons.extend(decay_reasons)
+
 
     # ─── Step 5b: Shadow Mode Check ──────────────────────────────────────────
     caller_in_shadow = is_shadow(caller_service)
@@ -722,6 +827,14 @@ async def catch_all_proxy(
     for key, value in request.headers.items():
         if key.lower() not in ("host", "content-length", "transfer-encoding"):
             fwd_headers[key] = value
+
+    # ── Inject CyberMesh Mesh Identity Headers ────────────────────────────
+    # These headers prove the request was vetted by the proxy.
+    # The CyberMesh SDK on the receiving service validates their presence —
+    # if they are absent, the request bypassed the proxy and is dropped.
+    fwd_headers["X-Mesh-Caller"] = caller_service
+    fwd_headers["X-Mesh-Trust"] = str(round(trust_score, 1))
+    fwd_headers["X-Mesh-Request-ID"] = event.event_id
 
     try:
         resp = await http_client.request(

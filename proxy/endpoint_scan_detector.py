@@ -72,7 +72,24 @@ NOVEL_HIT_SCORE_THRESHOLD: float = 45.0
 # Per-caller: deque of (timestamp, endpoint_fingerprint)
 # endpoint_fingerprint = (target, method, path_template)
 _windows: Dict[str, Deque[Tuple[float, Tuple[str, str, str]]]] = {}
-_lock = threading.Lock()
+
+# Per-caller locks — callers never contend with each other.
+# A lightweight global lock only guards the dict-level insertion of new callers.
+_caller_locks: Dict[str, threading.Lock] = {}
+_global_lock = threading.Lock()  # guards _windows and _caller_locks dict mutations only
+
+
+def _get_caller_lock(caller: str) -> threading.Lock:
+    """Return the per-caller lock, creating it if necessary."""
+    # Fast path — lock already exists
+    if caller in _caller_locks:
+        return _caller_locks[caller]
+    # Slow path — first time we see this caller, create under global lock
+    with _global_lock:
+        if caller not in _caller_locks:
+            _caller_locks[caller] = threading.Lock()
+            _windows[caller] = deque()
+        return _caller_locks[caller]
 
 
 def _evict_old_entries(window: Deque, now: float):
@@ -109,9 +126,8 @@ def record_novel_hit(
     fingerprint = (target, method.upper(), path_template)
     now = time.time()
 
-    with _lock:
-        if caller not in _windows:
-            _windows[caller] = deque()
+    caller_lock = _get_caller_lock(caller)
+    with caller_lock:
         window = _windows[caller]
         _evict_old_entries(window, now)
         window.append((now, fingerprint))
@@ -133,10 +149,12 @@ def check_scan(
     """
     now = time.time()
 
-    with _lock:
-        if caller not in _windows:
-            return (100.0, False, "No novel endpoint pattern detected")
+    # Use per-caller lock — check_scan never blocks record_novel_hit for a different caller
+    if caller not in _windows:
+        return (100.0, False, "No novel endpoint pattern detected")
 
+    caller_lock = _get_caller_lock(caller)
+    with caller_lock:
         window = _windows[caller]
         _evict_old_entries(window, now)
         distinct = _distinct_endpoints(window)
@@ -170,9 +188,10 @@ def check_scan(
 def get_caller_stats(caller: str) -> dict:
     """Return current scan window stats for a caller (for diagnostics/dashboard)."""
     now = time.time()
-    with _lock:
-        if caller not in _windows:
-            return {"distinct_novel_hits": 0, "total_hits": 0, "window_seconds": WINDOW_SECONDS}
+    if caller not in _windows:
+        return {"distinct_novel_hits": 0, "total_hits": 0, "window_seconds": WINDOW_SECONDS}
+    caller_lock = _get_caller_lock(caller)
+    with caller_lock:
         window = _windows[caller]
         _evict_old_entries(window, now)
         return {
@@ -186,16 +205,23 @@ def get_caller_stats(caller: str) -> dict:
 def get_all_scan_stats() -> dict:
     """Return scan window stats for all callers (for /metrics endpoint)."""
     now = time.time()
-    with _lock:
-        result = {}
-        for caller, window in _windows.items():
-            _evict_old_entries(window, now)
-            if window:  # Only include callers with active windows
-                result[caller] = {
-                    "distinct_novel_hits": _distinct_endpoints(window),
-                    "total_hits": len(window),
-                }
-        return result
+    result = {}
+    # Snapshot caller list under global lock, then read each under its own lock
+    with _global_lock:
+        callers = list(_windows.keys())
+    for caller in callers:
+        if caller not in _caller_locks:
+            continue
+        with _caller_locks[caller]:
+            window = _windows.get(caller)
+            if window:
+                _evict_old_entries(window, now)
+                if window:
+                    result[caller] = {
+                        "distinct_novel_hits": _distinct_endpoints(window),
+                        "total_hits": len(window),
+                    }
+    return result
 
 
 def reset_caller(caller: str):
@@ -203,6 +229,7 @@ def reset_caller(caller: str):
     Clear scan history for a caller. Called after a service re-registers
     or an admin manually clears a flag.
     """
-    with _lock:
-        if caller in _windows:
+    if caller in _windows:
+        caller_lock = _get_caller_lock(caller)
+        with caller_lock:
             _windows[caller].clear()

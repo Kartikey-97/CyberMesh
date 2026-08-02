@@ -1,164 +1,99 @@
 """
 CyberMesh Proxy — JTI (JWT ID) Replay Protection Store
 
-Prevents token replay attacks by tracking consumed JTI values.
-A replayed token is one where the JWT is cryptographically valid but has
-already been presented — i.e. the attacker intercepted or copied a
-legitimate request and is re-sending it.
+Public API shim that delegates to the active JTICacheInterface backend.
+All call sites in identity.py and main.py use this module's functions —
+they are completely unaware of whether the backend is in-memory or Redis.
 
-Design decisions:
-    - Separate module from identity.py for single-responsibility
-    - Thread-safe via threading.Lock (async code runs on the event loop
-      but we guard against concurrent access patterns)
-    - Automatic expiry cleanup via periodic asyncio task
-    - Max-size bound to prevent memory exhaustion under brute-force DoS
-    - Returns rich detail strings for the event stream / dashboard
+Backend selection:
+    Set REDIS_URL env var → RedisJTICache (multi-node horizontal scaling)
+    No REDIS_URL          → InMemoryJTICache (default, single-node, zero deps)
+
+See proxy/jti_cache.py for the full implementation details of each backend.
 
 Competition note: This is a *demoable* attack. Replay the same request
 twice → second one is blocked even though the token signature is valid.
 This directly satisfies "continuous authentication" in the problem statement.
+
+With Redis enabled, this protection holds even when running 20 proxy
+instances behind a load balancer — one node's seen set is every node's.
 """
 
-import time
 import asyncio
-import threading
 import logging
-from datetime import datetime, timezone
-from typing import Tuple, Optional
+from typing import Tuple
+from proxy.jti_cache import create_jti_cache, JTICacheInterface
 
 logger = logging.getLogger("cybermesh-jti")
 
-# ─── Configuration ────────────────────────────────────────────────────────────
+# ─── Active Cache Instance ───────────────────────────────────────────────────
+# Instantiated at module load time. The factory reads REDIS_URL and returns
+# the appropriate backend. All public functions delegate here.
 
-# Max JTIs to track. Beyond this, oldest entries are evicted.
-# At 60s TTL and 100 req/s, worst case is ~6000 entries.
-# We set 50k as a generous ceiling — ~2MB of memory.
-MAX_JTI_ENTRIES = 50_000
+_cache: JTICacheInterface = create_jti_cache()
 
-# How often the cleanup task runs (seconds)
-CLEANUP_INTERVAL_SECONDS = 30
 
-# ─── Store ────────────────────────────────────────────────────────────────────
+# ─── Public API (synchronous-friendly async wrappers) ────────────────────────
+# identity.py calls these from async context via await.
+# We expose both sync and async variants for flexibility.
 
-# jti_string → expiry_timestamp
-_consumed: dict[str, float] = {}
-_lock = threading.Lock()
-
-# Stats for observability
-_stats = {
-    "total_checked": 0,
-    "replays_blocked": 0,
-    "entries_cleaned": 0,
-    "evictions_forced": 0,
-}
+async def consume_async(jti: str, exp: float) -> Tuple[bool, str]:
+    """Async consume — used by identity.py's verify_token()."""
+    return await _cache.consume(jti, exp)
 
 
 def consume(jti: str, exp: float) -> Tuple[bool, str]:
     """
-    Attempt to consume a JTI. Returns (is_new, detail_message).
-
-    - If jti has never been seen → record it, return (True, ...)
-    - If jti was already consumed → return (False, ...) — this is a replay
-
-    Args:
-        jti: The JWT ID claim from the token
-        exp: The token's expiry timestamp (we store this so cleanup
-             knows when to garbage-collect the entry)
+    Synchronous shim — runs the async consume on the running event loop.
+    Exists for backwards compatibility with any sync callers.
+    Prefer consume_async() in async code paths.
     """
-    # Reject empty/missing JTIs — shouldn't happen with proper auth-service
-    # but a forged token might try this
-    if not jti or not isinstance(jti, str):
-        return (
-            False,
-            "Missing or empty JTI claim — possible forged token"
-        )
-
-    exp_human = datetime.fromtimestamp(exp, tz=timezone.utc).strftime("%H:%M:%S UTC")
-
-    with _lock:
-        _stats["total_checked"] += 1
-
-        if jti in _consumed:
-            _stats["replays_blocked"] += 1
-            return (
-                False,
-                f"Token reuse detected (jti={jti[:8]}… already consumed). "
-                f"This is a replay attack — the token was valid but has already been used."
-            )
-
-        # Enforce size bound — evict oldest if at capacity
-        if len(_consumed) >= MAX_JTI_ENTRIES:
-            _evict_oldest_locked()
-
-        _consumed[jti] = exp
-
-    return (
-        True,
-        f"JTI {jti[:8]}… accepted (first use, valid until {exp_human})"
-    )
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # We're inside an async context — create a task and run sync via thread
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                future = ex.submit(asyncio.run, _cache.consume(jti, exp))
+                return future.result()
+        else:
+            return loop.run_until_complete(_cache.consume(jti, exp))
+    except RuntimeError:
+        return asyncio.run(_cache.consume(jti, exp))
 
 
-def is_consumed(jti: str) -> bool:
-    """Check if a JTI has already been consumed (without consuming it)."""
-    with _lock:
-        return jti in _consumed
+async def is_consumed(jti: str) -> bool:
+    """Check if a JTI has been consumed without consuming it."""
+    return await _cache.is_consumed(jti)
 
 
 def get_stats() -> dict:
-    """Return replay protection stats for the metrics endpoint."""
-    with _lock:
-        return {
-            **_stats,
-            "active_entries": len(_consumed),
-            "max_entries": MAX_JTI_ENTRIES,
-        }
+    """Return replay protection stats for the /metrics endpoint."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # Return a best-effort sync snapshot for metrics
+            # (Redis stats may be slightly stale — acceptable for metrics)
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                return ex.submit(asyncio.run, _cache.get_stats()).result()
+        return loop.run_until_complete(_cache.get_stats())
+    except Exception:
+        return {"error": "stats unavailable", "backend": "unknown"}
 
 
 def clear():
     """Clear all entries. Used in testing."""
-    with _lock:
-        _consumed.clear()
-        for key in _stats:
-            _stats[key] = 0
+    try:
+        asyncio.run(_cache.clear())
+    except RuntimeError:
+        pass
 
-
-# ─── Internal: Eviction ──────────────────────────────────────────────────────
-
-def _evict_oldest_locked():
-    """
-    Evict the 10% oldest entries when at capacity.
-    Called with _lock held. This is the safety valve against OOM under DoS.
-    """
-    evict_count = max(1, len(_consumed) // 10)
-    # Sort by expiry (oldest first) and remove
-    sorted_jtis = sorted(_consumed.items(), key=lambda x: x[1])
-    for jti, _ in sorted_jtis[:evict_count]:
-        del _consumed[jti]
-    _stats["evictions_forced"] += evict_count
-    logger.warning("JTI store at capacity (%d) — evicted %d oldest entries", MAX_JTI_ENTRIES, evict_count)
-
-
-def _cleanup_expired():
-    """Remove all entries whose token has expired. No point tracking them."""
-    now = time.time()
-    with _lock:
-        expired = [jti for jti, exp in _consumed.items() if exp <= now]
-        for jti in expired:
-            del _consumed[jti]
-        if expired:
-            _stats["entries_cleaned"] += len(expired)
-            logger.info("JTI cleanup: removed %d expired entries, %d remaining", len(expired), len(_consumed))
-
-
-# ─── Background Cleanup Task ─────────────────────────────────────────────────
 
 async def start_cleanup_task():
     """
-    Run periodic cleanup of expired JTIs. Called once at proxy startup.
-    This prevents unbounded memory growth — expired tokens are useless
-    to track since they'll fail JWT verification anyway.
+    Start the backend's cleanup task. Called once at proxy startup.
+    - InMemoryJTICache: starts a 30s periodic sweep coroutine
+    - RedisJTICache: logs a message and exits (Redis TTL handles cleanup)
     """
-    logger.info("JTI cleanup task started (interval=%ds)", CLEANUP_INTERVAL_SECONDS)
-    while True:
-        await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
-        _cleanup_expired()
+    await _cache.start_cleanup_task()

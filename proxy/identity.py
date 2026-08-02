@@ -21,7 +21,7 @@ import time
 from typing import Tuple, List, Optional
 from shared.config import JWT_ALGORITHM, TOKEN_TTL_SECONDS
 from shared.event_schema import ReasonDetail
-from proxy.jti_store import consume as jti_consume
+from proxy.jti_store import consume_async as jti_consume
 
 # Public key for RS256 verification — set at startup by main.py
 _public_key_pem: Optional[bytes] = None
@@ -86,7 +86,7 @@ async def verify_token(token: str) -> Tuple[str, float, List[ReasonDetail], bool
         # ─── JTI Replay Protection ────────────────────────────────────────
         # This is the key v2.1 addition. A valid token that has been
         # seen before is a REPLAY ATTACK — score it at 0.
-        is_new, jti_detail = jti_consume(jti, float(exp))
+        is_new, jti_detail = await jti_consume(jti, float(exp))
 
         if not is_new:
             reasons.append(ReasonDetail(

@@ -180,9 +180,15 @@ def _scan_text(text: str) -> List[Tuple[str, str]]:
     """
     Scan a text blob for all matching injection patterns.
     Returns list of (severity, pattern_name) for all matches.
+
+    Hardened against malformed URL encoding: unquote failures fall back
+    to the raw text so an attacker cannot silence detection via bad encoding.
     """
-    # URL-decode once for consistent matching
-    decoded = unquote(text)
+    try:
+        decoded = unquote(text, errors="strict")
+    except Exception:
+        # Malformed percent-encoding (e.g., %E0%A4%A) — scan the raw string
+        decoded = text
     matches = []
     for severity, name, pattern in _PATTERNS:
         if pattern.search(decoded):
@@ -218,22 +224,23 @@ def _check_payload(
     body_matches = _scan_text(body) if body else []
 
     # ── Scan query parameters individually ───────────────────────────────
-    # Parse each param value and scan it separately. Scanning the raw query
-    # string catches patterns that span across `?key=VALUE&key2=VALUE2`.
-    query_matches = []
+    # Use a set for O(1) deduplication — list membership check was O(n).
+    # parse_qs is wrapped to handle malformed encoding gracefully.
+    query_match_set: set = set()
     if query_string:
-        # Scan raw query string
-        query_matches.extend(_scan_text(query_string))
-        # Also scan each decoded value individually
+        # Scan raw query string first (catches cross-param patterns)
+        for m in _scan_text(query_string):
+            query_match_set.add(m)
+        # Scan each decoded value individually
         try:
-            params = parse_qs(query_string, keep_blank_values=True)
+            params = parse_qs(query_string, keep_blank_values=True, errors="replace")
             for key, values in params.items():
                 for val in values:
                     for match in _scan_text(val):
-                        if match not in query_matches:
-                            query_matches.append(match)
+                        query_match_set.add(match)
         except Exception:
             pass
+    query_matches = list(query_match_set)
 
     # Combine all matches, deduplicate by (severity, name)
     all_matches = list({m: True for m in body_matches + query_matches}.keys())

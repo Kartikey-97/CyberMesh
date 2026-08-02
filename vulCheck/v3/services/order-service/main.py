@@ -2,10 +2,17 @@ import httpx, asyncio, os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, status, Body
 
+# ── CyberMesh SDK Integration ───────────────────────────────────────
+import sys
+sys.path.insert(0, "/app")
+from cybermesh_sdk import CyberMeshMiddleware, MeshClient
+
 PROXY_URL = os.environ.get("PROXY_URL", "http://proxy:8080")
 SERVICE_NAME = "order-service"
 SERVICE_PORT = 8003
 SERVICE_SECRET = os.environ.get("SERVICE_SECRET", "order-service-secret")
+
+mesh = MeshClient(SERVICE_NAME, proxy_url=PROXY_URL)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -19,13 +26,16 @@ async def lifespan(app: FastAPI):
                 })
                 if r.status_code == 200:
                     print(f"✓ Registered with CyberMesh mesh")
+                    await mesh.acquire_token(SERVICE_SECRET)
                     break
             except Exception:
                 pass
             await asyncio.sleep(2)
     yield
+    await mesh.aclose()
 
-app = FastAPI(title="Order Service", lifespan=lifespan)
+app = FastAPI(title="Order Service (CyberMesh Protected)", lifespan=lifespan)
+app.add_middleware(CyberMeshMiddleware)
 
 orders_db = {
     501: {"id": 501, "user_id": 1, "item_id": 201, "quantity": 2, "status": "COMPLETED"},
@@ -57,6 +67,12 @@ async def create_order(payload: dict = Body(...)):
         "status": "PROCESSING"
     }
     orders_db[new_id] = order
+
+    # Check inventory via the mesh (not directly!) before confirming
+    resp = await mesh.get("inventory-service", f"/items/{payload.get('item_id', 101)}")
+    if resp.status_code == 200:
+        order["inventory_confirmed"] = True
+
     return order
 
 @app.get("/orders/{order_id}/status")

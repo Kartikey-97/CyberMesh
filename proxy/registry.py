@@ -23,20 +23,27 @@ class RegisteredService:
     internal_url: str
     registered_at: float = field(default_factory=time.time)
     mode: str = "enforced"  # "shadow" | "enforced" — see shadow_mode.py
+    public_key_pem: Optional[bytes] = None  # ECDSA P-256 public key for PoP verification
 
 
 # The live registry — populated at runtime
 _registry: dict[str, RegisteredService] = {}
 
 
-def register(name: str, internal_url: str, mode: str = "enforced"):
+def register(name: str, internal_url: str, mode: str = "enforced", public_key_pem: Optional[bytes] = None):
     """Register or update a service in the proxy's local registry."""
     if name in _registry:
         _registry[name].internal_url = internal_url
+        if public_key_pem is not None:
+            _registry[name].public_key_pem = public_key_pem
         logger.info("Registry updated: %s → %s", name, internal_url)
     else:
-        _registry[name] = RegisteredService(name=name, internal_url=internal_url, mode=mode)
-        logger.info("Registry added: %s → %s (mode=%s)", name, internal_url, mode)
+        _registry[name] = RegisteredService(
+            name=name, internal_url=internal_url,
+            mode=mode, public_key_pem=public_key_pem,
+        )
+        pop_status = "with PoP key" if public_key_pem else "no PoP key"
+        logger.info("Registry added: %s → %s (mode=%s, %s)", name, internal_url, mode, pop_status)
 
 
 def resolve(name: str) -> Optional[str]:
@@ -68,6 +75,16 @@ def set_mode(name: str, mode: str) -> bool:
 def is_registered(name: str) -> bool:
     """Check if a service is registered."""
     return name in _registry
+
+
+def set_public_key(name: str, public_key_pem: bytes) -> bool:
+    """Store a PoP public key for a registered service. Returns False if not found."""
+    svc = _registry.get(name)
+    if not svc:
+        return False
+    svc.public_key_pem = public_key_pem
+    logger.info("PoP public key registered for: %s", name)
+    return True
 
 
 def count() -> int:
