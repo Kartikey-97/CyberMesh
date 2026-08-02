@@ -6,7 +6,7 @@ COPY proxy/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy all the python modules
-COPY auth-service/ /app/auth-service/
+COPY auth-service/ /app/auth_service/
 COPY proxy/ /app/proxy/
 COPY shared/ /app/shared/
 COPY render_start.py /app/

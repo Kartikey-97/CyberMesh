@@ -9,7 +9,7 @@ logger = logging.getLogger("render_start")
 
 logger.info("Starting CyberMesh Auth Service on port 8081...")
 auth_proc = subprocess.Popen(
-    [sys.executable, "-m", "uvicorn", "auth-service.main:app", "--host", "127.0.0.1", "--port", "8081"]
+    [sys.executable, "-m", "uvicorn", "auth_service.main:app", "--host", "127.0.0.1", "--port", "8081"]
 )
 
 # Wait for auth-service to spin up so proxy can fetch the public key
