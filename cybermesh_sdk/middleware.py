@@ -46,11 +46,11 @@ MESH_ALLOW_DIRECT = os.environ.get("MESH_ALLOW_DIRECT", "false").lower() == "tru
 _public_key_pem: bytes | None = None
 
 
-async def _fetch_public_key() -> bytes | None:
-    """Fetch the RS256 public key from auth-service via the proxy."""
+async def _fetch_public_key(proxy_url: str):
+    """Fetch the proxy's public key (used to verify inbound JWTs)."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{PROXY_URL}/public-key")
+            resp = await client.get(f"{proxy_url}/public-key")
             if resp.status_code == 200:
                 logger.info("CyberMesh SDK: Public key fetched successfully")
                 return resp.text.encode("utf-8")
@@ -67,9 +67,10 @@ class CyberMeshMiddleware(BaseHTTPMiddleware):
         app.add_middleware(CyberMeshMiddleware)
     """
 
-    def __init__(self, app: ASGIApp, require_mesh_headers: bool = True):
+    def __init__(self, app: ASGIApp, require_mesh_headers: bool = True, proxy_url: str = None):
         super().__init__(app)
         self.require_mesh_headers = require_mesh_headers
+        self.proxy_url = proxy_url or PROXY_URL
 
     async def dispatch(self, request: Request, call_next):
         global _public_key_pem
@@ -120,7 +121,7 @@ class CyberMeshMiddleware(BaseHTTPMiddleware):
 
         # Fetch public key lazily (once)
         if _public_key_pem is None:
-            _public_key_pem = await _fetch_public_key()
+            _public_key_pem = await _fetch_public_key(self.proxy_url)
 
         if _public_key_pem:
             try:

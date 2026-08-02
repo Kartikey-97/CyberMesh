@@ -36,7 +36,7 @@ from cybermesh_sdk.pop import generate_key_pair, public_key_to_pem, sign_request
 logger = logging.getLogger("cybermesh-sdk")
 
 PROXY_URL = os.environ.get("PROXY_URL", "http://proxy:8080")
-AUTH_SERVICE_URL = os.environ.get("AUTH_SERVICE_URL", "http://auth-service:8000")
+AUTH_SERVICE_URL = os.environ.get("AUTH_SERVICE_URL", "http://auth-service:8081")
 
 
 class MeshClient:
@@ -49,9 +49,10 @@ class MeshClient:
     The client automatically attaches the JWT and retries on auth failure.
     """
 
-    def __init__(self, service_name: str, proxy_url: str = None):
+    def __init__(self, service_name: str, proxy_url: str = None, auth_url: str = None):
         self.service_name = service_name
         self.proxy_url = proxy_url or PROXY_URL
+        self.auth_url = auth_url or AUTH_SERVICE_URL
         self._token: str | None = None
         self._http = httpx.AsyncClient(timeout=10.0)
 
@@ -73,7 +74,7 @@ class MeshClient:
         try:
             # Acquire JWT from auth-service
             resp = await self._http.post(
-                f"{AUTH_SERVICE_URL}/token",
+                f"{self.auth_url}/token",
                 json={"service_name": self.service_name, "secret": secret},
             )
             if resp.status_code == 200:
