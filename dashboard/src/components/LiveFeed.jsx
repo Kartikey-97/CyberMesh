@@ -23,7 +23,7 @@ export default function LiveFeed({ events, onSelectEvent, selectedEventId }) {
             </tr>
           </thead>
           <tbody>
-            {events.map((evt, idx) => {
+            {events.filter(evt => evt.event_type === 'request_decision').map((evt, idx) => {
               const isShadow = evt.shadow;
               const isRecon = evt.data && evt.data.recon_alert;
               const rowClass = `row-${evt.decision?.toLowerCase()} animate-slide-down ${selectedEventId === evt.event_id ? 'selected' : ''} ${isShadow ? 'row-shadow' : ''} ${isRecon ? 'row-recon' : ''}`;

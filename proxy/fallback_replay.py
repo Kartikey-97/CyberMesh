@@ -9,7 +9,7 @@ from shared.event_schema import CyberMeshEvent
 logger = logging.getLogger("cybermesh-replay")
 
 
-async def replay_events(broadcaster: EventBroadcaster, fixture_path: str):
+async def replay_events(broadcaster: EventBroadcaster, fixture_path: str, stats: dict = None):
     """Load a JSON fixture file and replay events with realistic timing."""
     try:
         with open(fixture_path, "r") as f:
@@ -35,6 +35,17 @@ async def replay_events(broadcaster: EventBroadcaster, fixture_path: str):
 
             event = CyberMeshEvent(**filtered)
             broadcaster.broadcast(event)
+            
+            if stats and event.event_type == "request_decision":
+                stats["total_requests"] += 1
+                if event.decision == "ALLOW":
+                    stats["allowed"] += 1
+                elif event.decision == "BLOCK":
+                    stats["blocked"] += 1
+                elif event.decision == "STEP_UP":
+                    stats["step_ups"] += 1
+                stats["total_latency_ms"] += (event.latency_ms or 0)
+
             logger.info("Replayed: %s (%s)", event.event_type, event.caller or "system")
 
         logger.info("Replay complete")

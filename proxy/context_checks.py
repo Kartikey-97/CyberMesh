@@ -71,6 +71,9 @@ _PATTERNS = [
         r"\bUNION\b.*\bSELECT\b|\bSELECT\b.*\bFROM\b.*\bWHERE\b",
         re.IGNORECASE,
     )),
+    ("CRITICAL", "SQL Injection (tautology)", re.compile(
+        r"['\"]?\s*(OR|AND)\s*['\"]?\s*\w+\s*['\"]?\s*=\s*['\"]?\s*\w+", re.IGNORECASE
+    )),
     ("CRITICAL", "SQL Injection (comment escape)", re.compile(
         r"('|\")(\s*)(--|\#|/\*)",
         re.IGNORECASE,

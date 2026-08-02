@@ -55,7 +55,7 @@ _HEX_RE = re.compile(r"(?<=/)[0-9a-f]{8,40}(?=/|$)", re.IGNORECASE)
 SENSITIVE_PATTERNS = re.compile(
     r"/(admin|root|superuser|internal|debug|shutdown|restart|config|secret|"
     r"password|passwd|credential|token|key|private|privileged|management|"
-    r"backdoor|exec|execute|rce|exploit|shell)",
+    r"backdoor|exec|execute|rce|exploit|shell)(/|$|[^a-zA-Z])",
     re.IGNORECASE,
 )
 

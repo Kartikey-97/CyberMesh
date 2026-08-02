@@ -71,7 +71,8 @@ def update_learned_policy(policy: Dict[PolicyKey, RouteRecord]):
     """
     global learned_policy, known_pairs
     with _lock:
-        learned_policy = dict(policy)
+        learned_policy.clear()
+        learned_policy.update(policy)
         # Rebuild known_pairs from the new policy
         known_pairs = {(k[0], k[1]) for k in policy.keys()}
 

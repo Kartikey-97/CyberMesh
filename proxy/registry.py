@@ -22,14 +22,14 @@ class RegisteredService:
     name: str
     internal_url: str
     registered_at: float = field(default_factory=time.time)
-    mode: str = "shadow"  # "shadow" | "enforced" — see shadow_mode.py
+    mode: str = "enforced"  # "shadow" | "enforced" — see shadow_mode.py
 
 
 # The live registry — populated at runtime
 _registry: dict[str, RegisteredService] = {}
 
 
-def register(name: str, internal_url: str, mode: str = "shadow"):
+def register(name: str, internal_url: str, mode: str = "enforced"):
     """Register or update a service in the proxy's local registry."""
     if name in _registry:
         _registry[name].internal_url = internal_url

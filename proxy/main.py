@@ -25,6 +25,7 @@ import logging
 import httpx
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.responses import JSONResponse, Response
 from sse_starlette.sse import EventSourceResponse
 from pydantic import BaseModel
@@ -73,6 +74,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Content-Security-Policy"] = "default-src 'self'"
+        return response
+
+class PayloadSizeLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Enforce 1MB max payload size to prevent DoS (especially important since we parse payloads for anomaly detection)
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > 1024 * 1024:
+            return JSONResponse(status_code=413, content={"error": "Payload too large. Maximum allowed size is 1MB."})
+        return await call_next(request)
+
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(PayloadSizeLimitMiddleware)
 
 # Persistent async HTTP client for forwarding requests
 http_client: httpx.AsyncClient = None
@@ -376,7 +398,7 @@ async def set_mode(body: ModeRequest):
 
     if new_mode == "demo-replay":
         fixture_path = "/app/scripts/fallback_fixture.json"
-        active_replay_task = asyncio.create_task(replay_events(broadcaster, fixture_path))
+        active_replay_task = asyncio.create_task(replay_events(broadcaster, fixture_path, stats))
 
     # Broadcast mode change event
     mode_event = CyberMeshEvent(
@@ -405,6 +427,7 @@ async def revoke_service(service_name: str):
     revoke_event = CyberMeshEvent(
         event_type=EVENT_SERVICE_REVOKED,
         caller=service_name,
+        target=service_name,
         mode=proxy_mode,
         data={"service": service_name, "message": f"{service_name} identity revoked via kill-switch"},
     )
@@ -722,4 +745,5 @@ async def catch_all_proxy(
         raise HTTPException(status_code=502, detail=f"Cannot reach {target_service}: connection refused")
     except Exception as e:
         logger.error("Forward error to %s: %s", req_url, e)
-        raise HTTPException(status_code=502, detail=f"Bad Gateway: {str(e)}")
+        # Mask the exact error to prevent information leakage
+        raise HTTPException(status_code=502, detail="Bad Gateway: Upstream service unavailable")

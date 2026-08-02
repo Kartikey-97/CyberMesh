@@ -218,7 +218,8 @@ class TestQueryParamScanning:
         score, reasons = ctx(query="id=1%27%20OR%20%271%27%3D%271")
         fail_reasons = [r for r in reasons if r.check == "payload" and r.result == "FAIL"]
         # Encoded ' OR '1'='1 in query param
-        assert len(fail_reasons) >= 1 or score < 80.0  # At minimum score drops
+        assert len(fail_reasons) >= 1
+        assert score < 80.0
 
     def test_sqli_union_in_query(self):
         score, reasons = ctx(query="search=1+UNION+SELECT+*+FROM+users")
