@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import Header from './components/Header';
-import LiveFeed from './components/LiveFeed';
+import HeaderMetrics from './components/HeaderMetrics';
+import AttackSimulator from './components/AttackSimulator';
+import IdentityStatus from './components/IdentityStatus';
 import PolicyGraph from './components/PolicyGraph';
-import ThreatTimeline from './components/ThreatTimeline';
-import TrustScorePanel from './components/TrustScorePanel';
-import RiskExplanation from './components/RiskExplanation';
-import ServiceCards from './components/ServiceCards';
+import LiveFeed from './components/LiveFeed';
+import InvestigationDetails from './components/InvestigationDetails';
 import PolicyVersions from './components/PolicyVersions';
 import { useEventStream } from './hooks/useEventStream';
 import './App.css';
@@ -18,8 +17,8 @@ function App() {
   const [policy, setPolicy] = useState({});
   const [services, setServices] = useState({});
   const [policyVersions, setPolicyVersions] = useState([]);
-  const [mode, setMode] = useState('enforce');
   const [selectedEvent, setSelectedEvent] = useState(null);
+  const [theme, setTheme] = useState('dark');
 
   const fetchData = async () => {
     try {
@@ -38,7 +37,6 @@ function App() {
       setPolicy(pol);
       setServices(srv);
       setPolicyVersions(ver.versions || []);
-      if (met.mode) setMode(met.mode);
     } catch (e) {
       console.error('Failed to fetch data', e);
     }
@@ -50,79 +48,69 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
-  const handleModeChange = async (newMode) => {
-    try {
-      await fetch(`${API_URL}/mode`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: newMode })
-      });
-      setMode(newMode);
-      fetchData(); // Immediately refresh to grab auto-snapshot if applicable
-    } catch (e) {
-      console.error('Failed to set mode', e);
-    }
+  const toggleTheme = () => {
+    setTheme(prev => prev === 'dark' ? 'light' : 'dark');
   };
 
-  const handleServiceAction = async (serviceName, action) => {
-    try {
-      await fetch(`${API_URL}/services/${serviceName}/${action}`, { method: 'POST' });
-      fetchData();
-    } catch (e) {
-      console.error(`Failed to ${action} ${serviceName}`, e);
-    }
-  };
-  
-  const handleRevoke = async (serviceName) => {
-    try {
-      await fetch(`${API_URL}/revoke/${serviceName}`, { method: 'POST' });
-      fetchData();
-    } catch (e) {
-      console.error('Failed to revoke', e);
-    }
-  };
-
-  const handleRollback = async (version) => {
-    try {
-      await fetch(`${API_URL}/policy/rollback/${version}`, { method: 'POST' });
-      fetchData();
-    } catch (e) {
-      console.error(`Failed to rollback to ${version}`, e);
-    }
-  };
-
-  const handleSelectEvent = (event) => {
-    setSelectedEvent(event);
-  };
+  // Use the most recent event if none is selected for the investigation panel
+  const displayEvent = selectedEvent || (events.length > 0 ? events[0] : null);
 
   return (
-    <div className="dashboard-layout">
-      <Header mode={mode} metrics={metrics} />
+    <div className={`dashboard-layout-spog relative ${theme}-theme`}>
       
-      <div className="controls panel glass">
-        <button className={`btn-mode ${mode === 'learning' ? 'active' : ''}`} onClick={() => handleModeChange('learning')}>Learning Mode</button>
-        <button className={`btn-mode ${mode === 'enforce' ? 'active' : ''}`} onClick={() => handleModeChange('enforce')}>Enforce Mode</button>
-        <button className={`btn-mode ${mode === 'demo-replay' ? 'active' : ''}`} onClick={() => handleModeChange('demo-replay')}>Demo Replay</button>
-      </div>
-
-      <div className="dashboard-content">
-        <div className="left-column">
-          <LiveFeed events={events} onSelectEvent={handleSelectEvent} selectedEventId={selectedEvent?.event_id} />
-          <ServiceCards services={services} onAction={handleServiceAction} onRevoke={handleRevoke} />
+      {/* Top Header Ribbon */}
+      <HeaderMetrics metrics={metrics} policyCount={policy.active_learned_count || 0} theme={theme} onThemeToggle={toggleTheme} />
+      
+      {/* 3-Column Storytelling Grid: Controls (20%) -> Protection (55%) -> Evidence (25%) */}
+      <div className="story-grid">
+        
+        {/* Column 1: Controls & Status */}
+        <div className="story-col col-controls">
+          <AttackSimulator />
+          <IdentityStatus services={services} />
+          
+          <div className="panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: '220px', flexShrink: 0 }}>
+            <div className="panel-header">
+              <h2 className="panel-title">Active Policies</h2>
+            </div>
+            <div style={{ overflowY: 'auto', flex: 1, paddingRight: '8px' }}>
+              {policy.active_learned && Object.keys(policy.active_learned).length > 0 ? (
+                Object.keys(policy.active_learned).map(k => (
+                  <div key={k} style={{ marginBottom: '8px', fontSize: '0.8rem', background: 'rgba(255,255,255,0.02)', padding: '6px', borderRadius: '4px', border: '1px solid var(--border-subtle)' }}>
+                    <span style={{ color: '#10b981', fontWeight: 'bold' }}>ALLOW</span> {k}
+                  </div>
+                ))
+              ) : (
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Learning...</div>
+              )}
+              <div style={{ marginTop: '8px', fontSize: '0.8rem', background: 'rgba(239, 68, 68, 0.05)', padding: '6px', borderRadius: '4px', border: '1px solid rgba(239,68,68,0.2)' }}>
+                <span style={{ color: '#ef4444', fontWeight: 'bold' }}>DENY</span> ALL OTHER TRAFFIC
+              </div>
+            </div>
+          </div>
         </div>
 
-        <div className="right-column">
-          <PolicyGraph policy={policy} lastEvent={lastEvent} />
-          <PolicyVersions versions={policyVersions} onRollback={handleRollback} currentCount={policy.active_learned_count || 0} />
+        {/* Column 2: The Hero (Topology) */}
+        <div className="story-col col-hero">
+          <PolicyGraph policy={policy} lastEvent={lastEvent} theme={theme} />
+        </div>
+
+        {/* Column 3: Evidence (Alerts & Investigation) */}
+        <div className="story-col col-evidence">
+          <div className="panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: '350px' }}>
+             <div className="panel-header">
+               <h2 className="panel-title">Security Alerts</h2>
+             </div>
+             <LiveFeed 
+               events={events} 
+               onSelectEvent={(evt) => setSelectedEvent(selectedEvent?.event_id === evt.event_id ? null : evt)} 
+               selectedEventId={selectedEvent?.event_id} 
+             />
+          </div>
           
-          {selectedEvent ? (
-            <div className="analysis-panels">
-              <TrustScorePanel event={selectedEvent} />
-              <RiskExplanation event={selectedEvent} />
-            </div>
-          ) : (
-            <ThreatTimeline events={events} />
-          )}
+          <div style={{ flex: 1 }}>
+             <InvestigationDetails event={displayEvent} onClear={() => setSelectedEvent(null)} />
+          </div>
         </div>
       </div>
     </div>
@@ -130,4 +118,3 @@ function App() {
 }
 
 export default App;
-

@@ -1,0 +1,52 @@
+.investigation-details {
+  display: flex;
+  flex-direction: column;
+}
+
+.inv-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.inv-row {
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+}
+
+.inv-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+
+.inv-value {
+  font-size: 0.9rem;
+  color: var(--text-primary);
+}
+
+.inv-value.highlight {
+  color: #38bdf8;
+  font-weight: 500;
+}
+
+.inv-value.text-muted {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.action-row {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.1);
+  margin-top: 8px;
+}
+
+.action-row .inv-value {
+  font-size: 1.1rem;
+}

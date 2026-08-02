@@ -10,7 +10,10 @@ export default defineConfig({
       '/metrics': 'http://localhost:8080',
       '/policy': 'http://localhost:8080',
       '/mode': 'http://localhost:8080',
-      '/revoke': 'http://localhost:8080'
+      '/revoke': 'http://localhost:8080',
+      '/services': 'http://localhost:8080',
+      '/simulate-attack': 'http://localhost:8080',
+      '/simulate-traffic': 'http://localhost:8080'
     }
   }
 })

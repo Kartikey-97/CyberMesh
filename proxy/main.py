@@ -31,10 +31,12 @@ from sse_starlette.sse import EventSourceResponse
 from pydantic import BaseModel
 from typing import Optional
 import os
+import collections
+import random
 
 from proxy.identity import verify_token, set_public_key
 from proxy.jti_store import start_cleanup_task as jti_start_cleanup, get_stats as jti_get_stats
-from proxy.jti_cache import _cache as _jti_cache  # for direct async get_stats in metrics
+from proxy.jti_store import _cache as _jti_cache  # for direct async get_stats in metrics
 from proxy.registry import (
     register as registry_register, resolve as registry_resolve,
     list_all as registry_list_all, count as registry_count,
@@ -127,6 +129,7 @@ stats = {
     "blocked": 0,
     "step_ups": 0,
     "total_latency_ms": 0.0,
+    "latency_window": collections.deque(maxlen=1000),
     # Shadow mode counters — requests that would have been blocked/stepped up
     # but were forwarded anyway because the caller is in shadow mode.
     "shadow_blocked": 0,
@@ -195,11 +198,22 @@ async def health():
 @app.get("/metrics")
 async def get_metrics():
     avg_latency = 0.0
+    p95_latency = 0.0
     if stats["total_requests"] > 0:
         avg_latency = round(stats["total_latency_ms"] / stats["total_requests"], 2)
+    if len(stats["latency_window"]) > 0:
+        sorted_lat = sorted(stats["latency_window"])
+        idx = int(0.95 * len(sorted_lat))
+        p95_latency = round(sorted_lat[idx], 2)
+        
     jti_stats = await _jti_cache.get_stats()
     return {
         "total_requests": stats["total_requests"],
+        "allowed": stats["allowed"],
+        "blocked": stats["blocked"],
+        "step_ups": stats["step_ups"],
+        "avg_latency_ms": avg_latency,
+        "p95_latency_ms": p95_latency,
         "allowed": stats["allowed"],
         "blocked": stats["blocked"],
         "step_ups": stats["step_ups"],
@@ -534,6 +548,120 @@ async def get_decay_config():
     return get_decay_stats()
 
 
+# ─── Demo Simulation Endpoints ────────────────────────────────────────────────
+
+demo_traffic_task = None
+
+async def background_traffic_loop():
+    services = ["user-service", "billing-service", "admin-service", "payment-gateway", "database"]
+    while True:
+        await asyncio.sleep(random.uniform(0.5, 2.0))
+        caller = random.choice(services[:3])
+        target = random.choice(services)
+        if caller == target: target = "database"
+        latency = random.uniform(1.2, 8.5)
+        
+        stats["total_requests"] += 1
+        stats["allowed"] += 1
+        stats["total_latency_ms"] += latency
+        stats["latency_window"].append(latency)
+        
+        event = CyberMeshEvent(
+            event_type=EVENT_REQUEST_DECISION,
+            caller=caller,
+            target=target,
+            path=f"/api/v1/resource/{random.randint(10, 99)}",
+            method="GET",
+            decision=DECISION_ALLOW,
+            trust_score=100.0,
+            identity_score=100.0,
+            behavior_score=100.0,
+            context_score=100.0,
+            band="TRUSTED",
+            latency_ms=round(latency, 2),
+            reasons=[ReasonDetail("identity", "PASS", "DPoP Verified", 100)],
+            mode=proxy_mode,
+            jti_replayed=False,
+            shadow=False,
+            would_have_been="",
+            data={}
+        )
+        broadcaster.broadcast(event)
+
+class TrafficRequest(BaseModel):
+    enabled: bool
+
+@app.post("/simulate-traffic")
+async def toggle_traffic(req: TrafficRequest):
+    global demo_traffic_task
+    if req.enabled and not demo_traffic_task:
+        demo_traffic_task = asyncio.create_task(background_traffic_loop())
+    elif not req.enabled and demo_traffic_task:
+        demo_traffic_task.cancel()
+        demo_traffic_task = None
+    return {"status": "ok", "enabled": req.enabled}
+
+class AttackRequest(BaseModel):
+    attack_type: str
+
+@app.post("/simulate-attack")
+async def simulate_attack(req: AttackRequest):
+    stats["total_requests"] += 1
+    stats["blocked"] += 1
+    latency = random.uniform(2.5, 9.2)
+    stats["total_latency_ms"] += latency
+    stats["latency_window"].append(latency)
+    
+    caller = "user-service"
+    target = "billing-service"
+    path = "/api/v1/invoice"
+    reasons = []
+    
+    if req.attack_type == "dpop_replay":
+        reasons.append(ReasonDetail("identity", "FAIL", "JTI Replay Detected (DPoP token stolen)", -100))
+    elif req.attack_type == "lateral_movement":
+        caller = "admin-service"
+        target = "database"
+        path = "/db/drop"
+        reasons.append(ReasonDetail("identity", "PASS", "Identity Verified", 100))
+        reasons.append(ReasonDetail("policy", "FAIL", "Policy Violation (Lateral Movement)", 0))
+    elif req.attack_type == "signature_mismatch":
+        reasons.append(ReasonDetail("pop", "FAIL", "X-Mesh-Signature verification failed (Forged request)", 0))
+    else:
+        raise HTTPException(status_code=400, detail="Unknown attack type")
+        
+    explanation = build_explanation(
+        identity_reasons=[r for r in reasons if r.check in ("identity", "pop")],
+        policy_reasons=[r for r in reasons if r.check == "policy"],
+        context_reasons=[],
+        trust_score=0.0,
+        decision=DECISION_BLOCK,
+    )
+    
+    event = CyberMeshEvent(
+        event_type=EVENT_REQUEST_DECISION,
+        caller=caller,
+        target=target,
+        path=path,
+        method="POST",
+        decision=DECISION_BLOCK,
+        trust_score=0.0,
+        identity_score=100.0 if req.attack_type == "lateral_movement" else 0.0,
+        behavior_score=0.0 if req.attack_type == "lateral_movement" else 100.0,
+        context_score=0.0 if req.attack_type == "signature_mismatch" else 100.0,
+        band="CRITICAL",
+        latency_ms=round(latency, 2),
+        reasons=reasons,
+        mode=proxy_mode,
+        jti_replayed=(req.attack_type == "dpop_replay"),
+        shadow=False,
+        would_have_been="",
+        data={}
+    )
+    broadcaster.broadcast(event)
+    return {"status": "injected", "attack": req.attack_type}
+
+
 # ─── SSE Event Stream ────────────────────────────────────────────────────────
 
 @app.get("/events")
@@ -745,6 +873,7 @@ async def catch_all_proxy(
     # ─── Measure Proxy Overhead ───────────────────────────────────────────
     latency_ms = (time.perf_counter() - start_time) * 1000
     stats["total_latency_ms"] += latency_ms
+    stats["latency_window"].append(latency_ms)
 
     # ─── Broadcast Event ──────────────────────────────────────────────────
     event = CyberMeshEvent(

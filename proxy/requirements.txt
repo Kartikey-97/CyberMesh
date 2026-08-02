@@ -4,3 +4,5 @@ PyJWT==2.10.1
 httpx==0.28.1
 sse-starlette==2.3.5
 python-multipart==0.0.20
+cryptography
+redis
