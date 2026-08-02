@@ -52,6 +52,36 @@ The attack simulation runs through 4 phases:
 3. **Attack Simulation** — Lateral movement, rate abuse, SQL injection, forged tokens
 4. **Revocation** — Kill-switch demo, instant access denial
 
+## The CyberMesh SDK (PyPI)
+
+We have published a native Python SDK to the global PyPI registry. Any developer can install it to make their microservice instantly Zero-Trust compliant.
+
+```bash
+pip install cybermesh-sdk
+```
+
+### 1-Line Identity Enforcement
+```python
+from fastapi import FastAPI
+from cybermesh_sdk import CyberMeshMiddleware
+
+app = FastAPI()
+
+# Intercepts every request, verifies DPoP identity, and blocks lateral movement
+app.add_middleware(CyberMeshMiddleware)
+```
+
+### Auto-Signed Outbound Requests
+```python
+from cybermesh_sdk import MeshClient
+
+# Automatically fetches tokens and computes cryptographic PoP signatures
+client = MeshClient("billing-service")
+await client.acquire_token("secret")
+
+response = await client.get("admin-service", "/api/v1/data")
+```
+
 ---
 
 ## Architecture
